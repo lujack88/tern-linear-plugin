@@ -614,7 +614,10 @@
 
 	& [data-role^='linear-todo.modal-desc'] {
 		min-height: 120px;
-		max-height: 360px;
+		/* A long description (templates) scrolls in place, keeping the chips and footer in view. */
+		max-height: min(360px, 40vh);
+		overflow-y: auto;
+		flex-shrink: 0;
 		padding: 4px 0;
 		border: 0;
 		background: transparent;
