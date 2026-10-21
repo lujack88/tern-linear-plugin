@@ -63,7 +63,10 @@ error.
   (priority, identifier, title, labels, estimate, assignee). `↑`/`↓` run on
   across groups.
 
-The View and the Mine toggle are remembered.
+Each column (Kanban) or group (List) collapses with the `▾` before its name, and
+expands with `▸`; collapsed ones keep their count, and the arrow keys skip them.
+
+The View, the Mine toggle and the collapsed columns are remembered.
 
 ## The issue view
 
@@ -123,7 +126,9 @@ one chip per property. Clicking a chip opens a searchable list (`↑`/`↓`, `En
 
 The shortcuts work while the caret is outside the title and description (`Esc`
 leaves a field, `Tab` moves between them). `Ctrl+Enter` / `Cmd+Enter` creates
-the issue; `Esc` outside a field closes the modal and drops the draft.
+the issue. `Esc` outside a field, or a click outside the modal, closes it and keeps
+the draft: the next New issue opens it again as it was (a created issue clears it).
+A click outside an open list closes just the list.
 **Create more** keeps the modal open with the same properties after each issue.
 
 A template fills the modal with its title, description and properties. The issue

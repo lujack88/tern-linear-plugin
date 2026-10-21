@@ -43,6 +43,7 @@ halves.
 | `linear-todo.status` | `{at, ok, error?, issues}` of the last sync, for `Linear: status`. |
 | `linear-todo.view` | `"kanban"` or `"list"`. |
 | `linear-todo.mine` | `true` while the Mine toggle is on. |
+| `linear-todo.folded` | `{[stateId] = true}` for collapsed columns / List groups. |
 | `linear-todo.interval` | Poll interval in seconds; 60 when unset or below 30. |
 | `linear-todo.selftest` | `"ok"` or the last self-test failure. |
 

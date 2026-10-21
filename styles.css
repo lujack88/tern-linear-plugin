@@ -1003,6 +1003,46 @@
 	}
 }
 
+/* Behind the layer's overlays: a click outside closes them (the modal keeps its draft). */
+.sf-layer[data-surface='plugin.linear-todo.board'] .lt-scrim {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	pointer-events: auto;
+}
+
+.sf-layer[data-surface='plugin.linear-todo.board'] .lt-scrim + [data-role='linear-todo.modal'] {
+	box-shadow: 0 0 0 100vmax rgb(0 0 0 / 35%);
+}
+
+/* Collapsible columns and List groups */
+.sf-main[data-surface='plugin.linear-todo.board'] {
+	& .lt-fold {
+		width: 16px;
+		height: 18px;
+		border-radius: 4px;
+		font-size: 11px;
+		color: var(--lt-muted);
+		text-align: center;
+	}
+
+	& .lt-fold:hover {
+		background: rgb(from var(--tv-fg) r g b / 8%);
+		color: var(--tv-fg);
+	}
+
+	& .lt-col[data-folded='true'] {
+		flex: 0 0 auto;
+		min-width: 0;
+	}
+
+	& .lt-col[data-folded='true'] .lt-add {
+		display: none;
+	}
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.sf-main[data-surface='plugin.linear-todo.board'] .lt-card[data-mark='pick'] {
 		rotate: none;

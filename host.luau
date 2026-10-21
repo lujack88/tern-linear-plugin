@@ -49,6 +49,8 @@ type State = {
 	creating: { [string]: { stateId: string, title: string } },
 	-- The open "New issue" modal, and the choices it offers (fetched when it opens).
 	draft: Create.Draft?,
+	-- A modal closed without creating (Esc or a click outside): reopened as it was, like Linear's draft.
+	kept: Create.Draft?,
 	meta: any?,
 	-- Every workspace's API key by organization id (in memory only), and whether the header's
 	-- workspace switcher is open.
@@ -60,6 +62,8 @@ type State = {
 	detail: Detail.Detail?,
 	view: ViewName,
 	mine: boolean,
+	-- Collapsed columns / List groups by State id (remembered in kv).
+	folded: { [string]: boolean },
 }
 
 local function nowSec(): number
@@ -160,7 +164,7 @@ end
 
 -- Drops everything tied to the shown issues (on a team change or disconnect).
 local function resetBoard(state: State)
-	state.overlay, state.creating, state.draft, state.meta, state.detail = {}, {}, nil, nil, nil
+	state.overlay, state.creating, state.draft, state.kept, state.meta, state.detail = {}, {}, nil, nil, nil, nil
 	state.sel, state.lift, state.dropState, state.confirm, state.edit, state.undo = nil, nil, nil, nil, nil, nil
 	state.error, state.failures, state.loading, state.fetchedAt = nil, 0, false, nil
 end
@@ -501,7 +505,9 @@ local function openDraft(state: State, stateId: string, template: boolean)
 	if state.edit then
 		endEdit(state, false)
 	end
-	local d = Create.new(stateId, if state.mine then s.viewerId else nil)
+	-- A kept draft comes back whole (its own State included).
+	local d = state.kept or Create.new(stateId, if state.mine then s.viewerId else nil)
+	state.kept, d.pop, d.error = nil, nil, nil
 	state.draft, state.lift, state.dropState, state.confirm, state.switcher = d, nil, nil, nil, false
 	if template then
 		Create.openPop(d, "template", state.cx)
@@ -511,8 +517,13 @@ local function openDraft(state: State, stateId: string, template: boolean)
 	loadMeta(state)
 end
 
-local function closeDraft(state: State)
+-- Closes the modal; `keep` holds on to what was typed for the next open.
+local function closeDraft(state: State, keep: boolean)
+	local d = state.draft
 	state.draft = nil
+	if keep and d and (d.title.text ~= "" or d.desc.text ~= "") then
+		state.kept = d
+	end
 	state.cx:frame({ { "focus", tern.json.null } })
 end
 
@@ -537,7 +548,7 @@ local function submitDraft(state: State)
 	if d.more then
 		Create.again(d, state.cx)
 	else
-		closeDraft(state)
+		closeDraft(state, false)
 	end
 	Linear.create(key, input, function(issue: any?, cerr: string?)
 		state.creating[tmp] = nil
@@ -755,7 +766,7 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		if r == "submit" then
 			submitDraft(state)
 		elseif r == "close" then
-			closeDraft(state)
+			closeDraft(state, true)
 		end
 		return
 	end
@@ -845,6 +856,14 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			state.view, state.edit = value, nil
 			kvSet("linear-todo.view", value)
 		end
+	elseif name == "fold" then
+		if state.folded[value] then
+			state.folded[value] = nil
+		else
+			state.folded[value] = true
+		end
+		kvSet("linear-todo.folded", state.folded)
+		return
 	elseif name == "mine" then
 		state.mine = not state.mine
 		kvSet("linear-todo.mine", state.mine)
@@ -888,7 +907,7 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 			submitDraft(state)
 			return true
 		elseif r == "close" then
-			closeDraft(state)
+			closeDraft(state, true)
 			return true
 		end
 		return r :: boolean
@@ -940,7 +959,11 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		act(state, "undo", "", cx)
 		return true
 	end
-	local cols = columnsOf(state)
+	-- Keys skip collapsed columns and groups, as if they were empty.
+	local cols: { Column } = {}
+	for _, col in columnsOf(state) do
+		table.insert(cols, if state.folded[col.state.id] then { state = col.state, issues = {} } else col)
+	end
 	local selIdx = if visible(cols, state.sel) then Model.columnIndex(cols, stateIdOf(state, state.sel)) else nil
 	if k.alt and not mod and name == "c" then
 		-- Linear's "create from template".
@@ -1224,22 +1247,33 @@ local function column(state: State, col: Column, liftState: string?, list: boole
 			}))
 		end
 	end
-	for _, issue in col.issues do
+	local folded = state.folded[stateId] == true
+	local shown: { any } = if folded then {} else col.issues
+	for _, issue in shown do
 		table.insert(items, if list then row(state, issue, col, liftState) else card(state, issue, col, liftState))
 	end
-	if #items == 0 and not list then
+	if #items == 0 and not list and not folded then
 		table.insert(items, el("div", "none", "empty", { class = "lt-none", text = "No issues" }))
 	end
 	local lifted = liftState ~= nil
 	return el("div", if list then "group" else "col", stateId, {
 		class = if list then "lt-group" else "lt-col",
 		attrs = {
+			["data-folded"] = flag(folded),
 			["data-drop"] = flag(lifted and stateId ~= liftState),
 			["data-target"] = flag(lifted and stateId == state.dropState),
 		},
 		actions = if lifted then { click = "drop=" .. stateId } else nil,
 	}, {
 		el("div", "col-head", "head", { class = "lt-col-head" }, {
+			el("button", "fold", "fold", {
+				class = "lt-fold",
+				text = if folded then "▸" else "▾",
+				aria = if folded then "Expand " .. col.state.name else "Collapse " .. col.state.name,
+				title = if folded then "Expand" else "Collapse",
+				attrs = { ["aria-expanded"] = if folded then "false" else "true" },
+				actions = { click = "fold=" .. stateId },
+			}),
 			el("span", "state", "icon", { class = "lt-state", attrs = { ["data-type"] = col.state.type } }),
 			el("span", "col-title", "label", { class = "lt-col-title", text = col.state.name }),
 			el("span", "col-count", "count", { class = "lt-col-count", text = tostring(#col.issues) }),
@@ -1370,7 +1404,7 @@ local function view(state: State): BlockView
 		return {
 			main = region("main", Detail.view(dt, opened, c, state.confirm == dt.id)),
 			dock = dock(state),
-			layer = if dt.d.pop then region("layer", { Create.popover(dt.d, c) }) else nil,
+			layer = if dt.d.pop then region("layer", { Create.scrim("cm-unpop"), Create.popover(dt.d, c) }) else nil,
 		}
 	elseif dt then
 		-- The issue left the board (canceled here or elsewhere, or moved out by a sync).
@@ -1398,7 +1432,7 @@ local function view(state: State): BlockView
 	end
 	local d = state.draft
 	local layer = if d then region("layer", Create.view(d, ctxOf(state)))
-		elseif state.switcher then region("layer", { switcher(state) })
+		elseif state.switcher then region("layer", { Create.scrim("ws-pop"), switcher(state) })
 		else nil
 	return { main = region("main", kids), dock = dock(state), layer = layer }
 end
@@ -1427,7 +1461,15 @@ tern.block.define("board", {
 			failures = 0,
 			view = if kvGet("linear-todo.view") == "list" then "list" else "kanban",
 			mine = kvGet("linear-todo.mine") == true,
+			folded = {},
 		}
+		-- Copied key by key: stored tables may be read-only.
+		local folded = kvGet("linear-todo.folded")
+		for id, on in (if type(folded) == "table" then folded else {}) do
+			if on == true then
+				state.folded[id] = true
+			end
+		end
 		local s = setupOf()
 		if s then
 			state.teamId = s.teamId

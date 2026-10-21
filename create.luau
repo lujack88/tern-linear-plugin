@@ -591,6 +591,11 @@ function M.kinds(c: Ctx): { Kind }
 	return kinds
 end
 
+-- A cover behind the layer's overlays: clicking it runs `action` (closes what is open).
+function M.scrim(action: string): Node
+	return el("div", "scrim", "scrim", { class = "lt-scrim", actions = { click = action } })
+end
+
 -- The layer's children: the modal, and the open popover anchored to its chip.
 function M.view(d: Draft, c: Ctx): { Node }
 	local chips: { Node } = {}
@@ -622,7 +627,9 @@ function M.view(d: Draft, c: Ctx): { Node }
 		el("button", "submit", "submit", { class = "lt-submit", text = "Create issue", title = "Ctrl+Enter", actions = { click = "cm-submit" } }),
 	}))
 	local out: { Node } = {
-		ui.node("overlay", { key = "create", role = ROLE .. "modal", aria = "New issue", size = "lg", modal = true }, body),
+		-- A click outside closes the open list, else the modal (its draft is kept).
+		M.scrim(if d.pop then "cm-unpop" else "cm-close"),
+		ui.node("overlay", { key = "create", role = ROLE .. "modal", aria = "New issue", size = "lg" }, body),
 	}
 	if d.pop then
 		table.insert(out, M.popover(d, c))
@@ -644,6 +651,8 @@ function M.act(d: Draft, name: string, value: string, c: Ctx, cx: BlockCx): ("su
 		d.more = not d.more
 	elseif name == "cm-submit" then
 		return "submit"
+	elseif name == "cm-unpop" then
+		M.closePop(d, cx)
 	elseif name == "cm-close" then
 		return "close"
 	else
