@@ -8,6 +8,7 @@ local Linear = require("./linear")
 local Model = require("./model")
 local Field = require("./field")
 local Create = require("./create")
+local Detail = require("./detail")
 
 local ui = tern.ui
 local ROLE = "linear-todo."
@@ -49,6 +50,8 @@ type State = {
 	-- The open "New issue" modal, and the choices it offers (fetched when it opens).
 	draft: Create.Draft?,
 	meta: any?,
+	-- The issue opened from the board (Linear's issue view), drawn instead of the board.
+	detail: Detail.Detail?,
 	view: ViewName,
 	mine: boolean,
 }
@@ -139,7 +142,7 @@ end
 
 -- Drops everything tied to the shown issues (on a team change or disconnect).
 local function resetBoard(state: State)
-	state.overlay, state.creating, state.draft, state.meta = {}, {}, nil, nil
+	state.overlay, state.creating, state.draft, state.meta, state.detail = {}, {}, nil, nil, nil
 	state.sel, state.lift, state.dropState, state.confirm, state.edit, state.undo = nil, nil, nil, nil, nil, nil
 	state.error, state.failures, state.loading, state.fetchedAt = nil, 0, false, nil
 end
@@ -254,8 +257,8 @@ local function offer(state: State, label: string, revert: () -> ())
 end
 
 -- Optimistic update: shows `ov` now, writes `input`, then takes Linear's answer.
--- `ov.gone` removes the issue on success; `done` runs after a success.
-local function push(state: State, id: string, ov: Overlay, input: any, verb: string, done: ((issue: any) -> ())?)
+-- `ov.gone` removes the issue on success; `done` runs after a success, `failed` after a refusal.
+local function push(state: State, id: string, ov: Overlay, input: any, verb: string, done: ((issue: any) -> ())?, failed: (() -> ())?)
 	local key = state.key
 	if not key then
 		return
@@ -272,6 +275,9 @@ local function push(state: State, id: string, ov: Overlay, input: any, verb: str
 		end
 		if not issue then
 			state.cx:toast("error", verb .. " failed", err)
+			if failed then
+				failed()
+			end
 		else
 			if ov.gone then
 				remove(state, id)
@@ -399,6 +405,27 @@ local function ctxOf(state: State): Create.Ctx
 	}
 end
 
+-- Fetches the property choices (people, labels, projects, cycles, templates) for the modal and
+-- the issue view; the last ones stay shown meanwhile.
+local function loadMeta(state: State)
+	local key, teamId = state.key, state.teamId
+	if not key or not teamId then
+		return
+	end
+	local g = state.gen
+	Linear.meta(key, teamId, function(meta: any?, err: string?)
+		if g ~= state.gen or not alive(state.cx.pane) then
+			return
+		end
+		if meta then
+			state.meta = meta
+		elseif state.draft or state.detail then
+			state.cx:toast("error", "Could not load issue options", err)
+		end
+		state.cx:render()
+	end)
+end
+
 -- Opens the "New issue" modal in `stateId`; `template` opens the template list first.
 -- The choices are fetched on every open (templates and people change), the last ones shown meanwhile.
 local function openDraft(state: State, stateId: string, template: boolean)
@@ -421,18 +448,7 @@ local function openDraft(state: State, stateId: string, template: boolean)
 	else
 		Create.focus(d, "title", state.cx)
 	end
-	local g = state.gen
-	Linear.meta(key, teamId, function(meta: any?, err: string?)
-		if g ~= state.gen or not alive(state.cx.pane) then
-			return
-		end
-		if meta then
-			state.meta = meta
-		elseif state.draft then
-			state.cx:toast("error", "Could not load issue options", err)
-		end
-		state.cx:render()
-	end)
+	loadMeta(state)
 end
 
 local function closeDraft(state: State)
@@ -490,12 +506,171 @@ local function submitDraft(state: State)
 	end)
 end
 
--- Actions -------------------------------------------------------------------
-
+-- The undo step, while it is still offered.
 local function fresh(state: State): Undo?
 	local u = state.undo
 	return if u and tern.now() - u.at <= UNDO_MS then u else nil
 end
+
+-- Issue view ----------------------------------------------------------------
+
+-- A write that keeps whatever the issue's pending overlay already shows (a move, a rename).
+local function overlayFor(state: State, id: string): Overlay
+	local base = state.overlay[id]
+	return if base then table.clone(base) else {}
+end
+
+-- Opens issue `id` in place of the board and fetches its description and comments.
+local function openDetail(state: State, id: string)
+	local issue = find(state, id)
+	local key = state.key
+	if not issue or not key then
+		return
+	end
+	if state.edit then
+		endEdit(state, false)
+	end
+	local stateId, title = Model.effective(issue, state.overlay)
+	local dt = Detail.new(issue, stateId or issue.state.id, title)
+	state.detail, state.sel, state.lift, state.dropState, state.confirm = dt, id, nil, nil, nil
+	state.cx:frame({ { "focus", tern.json.null } })
+	if not state.meta then
+		loadMeta(state)
+	end
+	local g = state.gen
+	Linear.detail(key, id, function(info: any?, err: string?)
+		if g ~= state.gen or state.detail ~= dt or not alive(state.cx.pane) then
+			return
+		end
+		if info then
+			dt.info = info
+		else
+			dt.error = err
+		end
+		state.cx:render()
+	end)
+end
+
+local function closeDetail(state: State)
+	state.detail = nil
+	state.cx:frame({ { "focus", tern.json.null } })
+end
+
+-- j / k: the next or previous issue in the board's own order.
+local function stepDetail(state: State, dt: Detail.Detail, dir: number)
+	local list = Model.list(columnsOf(state))
+	for i, issue in list do
+		if issue.id == dt.id then
+			local to = list[i + dir]
+			if to then
+				openDetail(state, to.id)
+			end
+			return
+		end
+	end
+end
+
+local function saveDescription(state: State, dt: Detail.Detail)
+	local info = dt.info
+	local issue = find(state, dt.id)
+	if not info or not issue then
+		return
+	end
+	local text, prev = dt.d.desc.text, if type(info.description) == "string" then info.description else ""
+	if text == prev then
+		return
+	end
+	local id, ident = dt.id, issue.identifier
+	info.description = text
+	push(state, id, overlayFor(state, id), { description = text }, "Description", function()
+		offer(state, "Edited the description of " .. ident, function()
+			push(state, id, overlayFor(state, id), { description = prev }, "Undo", function()
+				info.description = prev
+			end)
+		end)
+	end, function()
+		info.description = prev
+	end)
+end
+
+local function sendComment(state: State, dt: Detail.Detail)
+	local key = state.key
+	local body = string.match(dt.comment.text, "^%s*(.-)%s*$") or ""
+	if not key or body == "" or dt.sending then
+		return
+	end
+	local sent = dt.comment.text
+	dt.sending = true
+	local g = state.gen
+	Linear.comment(key, dt.id, body, function(comment: any?, err: string?)
+		dt.sending = false
+		if g ~= state.gen or not alive(state.cx.pane) then
+			return
+		end
+		if not comment then
+			state.cx:toast("error", "Comment failed", err)
+		else
+			if dt.info and type(dt.info.comments) == "table" then
+				table.insert(dt.info.comments, comment)
+			end
+			-- Text typed while sending is kept.
+			if dt.comment.text == sent then
+				Field.reset(dt.comment, "")
+			end
+		end
+		state.cx:render()
+	end)
+	state.cx:render()
+end
+
+-- Writes what a property list changed: a State through `move`, the rest as one update with undo.
+local function saveProps(state: State, dt: Detail.Detail, before: any)
+	local after = Detail.snapshot(dt.d)
+	local issue = find(state, dt.id)
+	if not issue then
+		return
+	end
+	if after.stateId ~= before.stateId then
+		move(state, dt.id, after.stateId)
+	end
+	local input, back = Detail.changes(before, after)
+	if input then
+		local id, ident = dt.id, issue.identifier
+		push(state, id, overlayFor(state, id), input, "Update", function()
+			offer(state, "Updated " .. ident, function()
+				push(state, id, overlayFor(state, id), back, "Undo")
+			end)
+		end)
+	end
+end
+
+-- Carries out what the issue view asked for.
+local function runDetail(state: State, dt: Detail.Detail, intent: Detail.Intent)
+	if intent == "close" then
+		closeDetail(state)
+	elseif intent == "title" then
+		rename(state, dt.id, dt.d.title.text)
+	elseif intent == "desc" then
+		saveDescription(state, dt)
+	elseif intent == "comment" then
+		sendComment(state, dt)
+	elseif intent == "next" or intent == "prev" then
+		stepDetail(state, dt, if intent == "next" then 1 else -1)
+	elseif intent == "undo" then
+		local u = fresh(state)
+		if u then
+			state.undo = nil
+			u.revert()
+		end
+	elseif intent == "web" then
+		local issue = find(state, dt.id)
+		if issue and type(issue.url) == "string" then
+			state.cx:open(issue.url)
+		end
+	end
+end
+
+-- Actions -------------------------------------------------------------------
 
 local function act(state: State, name: string, value: string, cx: BlockCx)
 	local d = state.draft
@@ -506,6 +681,16 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		elseif r == "close" then
 			closeDraft(state)
 		end
+		return
+	end
+	local dt = state.detail
+	if dt and (string.sub(name, 1, 3) == "cm-" or string.sub(name, 1, 3) == "dt-") then
+		local before = Detail.snapshot(dt.d)
+		local r = Detail.act(dt, name, value, ctxOf(state), cx)
+		if type(r) == "string" then
+			runDetail(state, dt, r)
+		end
+		saveProps(state, dt, before)
 		return
 	end
 	if state.lift and name ~= "sel" and name ~= "lift" and name ~= "drop" then
@@ -520,12 +705,8 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			state.lift, state.dropState = nil, nil
 			return
 		end
-		state.sel, state.confirm = value, nil
-	elseif name == "open" then
-		local issue = find(state, value)
-		if issue and type(issue.url) == "string" then
-			cx:open(issue.url)
-		end
+		state.confirm = nil
+		openDetail(state, value)
 	elseif name == "lift" then
 		if state.lift == value then
 			state.lift, state.dropState = nil, nil
@@ -612,6 +793,16 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 			return true
 		end
 		return r :: boolean
+	end
+	local dt = state.detail
+	if dt then
+		local before = Detail.snapshot(dt.d)
+		local r = Detail.key(dt, k, ctxOf(state), cx)
+		if type(r) == "string" then
+			runDetail(state, dt, r)
+		end
+		saveProps(state, dt, before)
+		return r ~= false
 	end
 	local e = state.edit
 	if e then
@@ -702,7 +893,7 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		if state.lift then
 			act(state, "drop", state.dropState or "", cx)
 		elseif state.sel then
-			act(state, "open", state.sel, cx)
+			openDetail(state, state.sel)
 		else
 			return false
 		end
@@ -850,7 +1041,7 @@ local function itemProps(state: State, issue: any, class: string, dropHere: bool
 		},
 		mark = if state.lift == id then "pick" else nil,
 		title = issue.url,
-		actions = { click = "sel=" .. id, dblclick = "open=" .. id },
+		actions = { click = "sel=" .. id },
 	}
 end
 
@@ -1003,6 +1194,23 @@ local function empty(kids: { Node }, text: string): BlockView
 end
 
 local function view(state: State): BlockView
+	local dt = state.detail
+	local opened = dt and find(state, dt.id)
+	if dt and opened then
+		-- Linear's values flow into every field the caret is not in (and into the chips while
+		-- no write to the issue is in flight).
+		local stateId, title = Model.effective(opened, state.overlay)
+		Detail.refresh(dt, opened, stateId or opened.state.id, title, state.overlay[dt.id] == nil)
+		local c = ctxOf(state)
+		return {
+			main = region("main", Detail.view(dt, opened, c, state.confirm == dt.id)),
+			dock = dock(state),
+			layer = if dt.d.pop then region("layer", { Create.popover(dt.d, c) }) else nil,
+		}
+	elseif dt then
+		-- The issue left the board (canceled here or elsewhere, or moved out by a sync).
+		state.detail = nil
+	end
 	local cols = columnsOf(state)
 	local kids = header(state, #Model.list(cols))
 	if not state.teamId then
@@ -1076,6 +1284,18 @@ tern.block.define("board", {
 		local d = state.draft
 		if d and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
 			Create.event(d, ev)
+			return
+		end
+		local dt = state.detail
+		if dt and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
+			local mine, left = Detail.event(dt, ev)
+			if left then
+				runDetail(state, dt, left)
+			end
+			-- ⌃Z/⌘Z outside the fields arrives as an id-less "undo": the board's one-step undo.
+			if not mine and ev.ev == "undo" then
+				act(state, "undo", "", cx)
+			end
 			return
 		end
 		local e = state.edit

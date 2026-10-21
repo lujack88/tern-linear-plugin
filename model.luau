@@ -347,8 +347,9 @@ function M.markdown(doc: any): string?
 	return block(doc)
 end
 
--- The issue fields an issue template's `templateData` sets, read defensively.
-function M.templateFields(data: any): { [string]: any }
+-- The issue fields an issue template's `templateData` sets, read defensively. `descData`:
+-- its `descriptionData` already decoded when Linear sent it as a JSON string.
+function M.templateFields(data: any, descData: any?): { [string]: any }
 	local out: { [string]: any } = {}
 	if type(data) ~= "table" then
 		return out
@@ -364,9 +365,14 @@ function M.templateFields(data: any): { [string]: any }
 		end
 	end
 	if type(data.labelIds) == "table" then
-		out.labelIds = table.clone(data.labelIds)
+		-- A copy: decoded JSON is read-only.
+		local ids: { string } = {}
+		for _, id in data.labelIds do
+			table.insert(ids, id)
+		end
+		out.labelIds = ids
 	end
-	out.description = if type(data.description) == "string" then data.description else M.markdown(data.descriptionData)
+	out.description = if type(data.description) == "string" then data.description else M.markdown(descData or data.descriptionData)
 	return out
 end
 

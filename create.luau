@@ -17,6 +17,9 @@ export type Kind = "status" | "priority" | "assignee" | "labels" | "estimate" | 
 export type Option = { id: string, label: string, on: boolean?, hint: string?, icon: string? }
 export type Pop = { kind: Kind, q: Field.Field, cursor: number }
 export type Draft = {
+	-- Node paths: the container of the title/description fields, and of the property chips.
+	root: string,
+	anchor: string,
 	stateId: string,
 	priority: number,
 	assigneeId: string?,
@@ -52,6 +55,8 @@ end
 
 function M.new(stateId: string, assigneeId: string?): Draft
 	return {
+		root = MODAL,
+		anchor = MODAL .. ".chips",
 		stateId = stateId,
 		priority = 0,
 		assigneeId = assigneeId,
@@ -64,7 +69,7 @@ function M.new(stateId: string, assigneeId: string?): Draft
 end
 
 local function fieldPath(d: Draft, which: "title" | "desc"): string
-	return MODAL .. "." .. which
+	return d.root .. "." .. which
 end
 
 -- Moves the caret into `which` (nil: out of every field).
@@ -85,7 +90,7 @@ function M.openPop(d: Draft, kind: Kind, cx: BlockCx)
 	cx:frame({ { "focus", SEARCH .. "_" .. q.rev } })
 end
 
-local function closePop(d: Draft, cx: BlockCx)
+function M.closePop(d: Draft, cx: BlockCx)
 	d.pop = nil
 	cx:frame({ { "focus", tern.json.null } })
 end
@@ -180,7 +185,10 @@ local function options(d: Draft, c: Ctx): { Option }
 		end
 	elseif kind == "cycle" then
 		add("none", "No cycle", d.cycleId == nil)
-		local cycles = table.clone(meta.cycles or {})
+		local cycles = {}
+		for _, cy in meta.cycles or {} do
+			table.insert(cycles, cy)
+		end
 		table.sort(cycles, function(a: any, b: any): boolean
 			return (a.startsAt or "") < (b.startsAt or "")
 		end)
@@ -236,10 +244,7 @@ end
 
 local function applyTemplate(d: Draft, tp: any)
 	local data = decode(tp.templateData)
-	if type(data) == "table" then
-		data.descriptionData = decode(data.descriptionData)
-	end
-	local f = Model.templateFields(data)
+	local f = Model.templateFields(data, if type(data) == "table" then decode(data.descriptionData) else nil)
 	d.templateId, d.templateName = tp.id, tp.name
 	if f.title then
 		Field.reset(d.title, f.title)
@@ -307,7 +312,7 @@ function M.choose(d: Draft, id: string, c: Ctx, cx: BlockCx)
 			end
 		end
 	end
-	closePop(d, cx)
+	M.closePop(d, cx)
 end
 
 -- Submission ------------------------------------------------------------------
@@ -354,32 +359,47 @@ end
 local SHORTCUTS: { [string]: Kind } = { s = "status", p = "priority", a = "assignee", l = "labels", e = "estimate", t = "template" }
 local SHIFTED: { [string]: Kind } = { p = "project", c = "cycle", d = "due" }
 
+-- A key for the open property list; whether it was used.
+function M.popKey(d: Draft, k: Key, c: Ctx, cx: BlockCx): boolean
+	local pop = d.pop :: Pop
+	local name = k.name
+	local list = options(d, c)
+	if name == "escape" then
+		M.closePop(d, cx)
+	elseif name == "up" or name == "down" then
+		pop.cursor = math.clamp(pop.cursor + (if name == "up" then -1 else 1), 1, math.max(#list, 1))
+	elseif name == "enter" then
+		local o = list[pop.cursor]
+		if o then
+			M.choose(d, o.id, c, cx)
+		end
+	else
+		local what = Field.edit_key(pop.q, k, cx)
+		if what == "text" then
+			pop.cursor = 1
+		end
+		return what ~= nil
+	end
+	return true
+end
+
+-- The property shortcut `k` stands for (Linear's), if any; `template` only where offered.
+function M.shortcut(k: Key, template: boolean): Kind?
+	if k.ctrl or k.meta or k.alt then
+		return nil
+	end
+	local kind: Kind? = if k.shift then SHIFTED[k.name] else SHORTCUTS[k.name]
+	return if kind == "template" and not template then nil else kind
+end
+
 -- Handles a key while the modal is open: "submit", "close", or whether it was used.
 function M.key(d: Draft, k: Key, c: Ctx, cx: BlockCx): ("submit" | "close" | boolean)
 	local name = k.name
 	if (k.ctrl or k.meta) and name == "enter" then
 		return "submit"
 	end
-	local pop = d.pop
-	if pop then
-		local list = options(d, c)
-		if name == "escape" then
-			closePop(d, cx)
-		elseif name == "up" or name == "down" then
-			pop.cursor = math.clamp(pop.cursor + (if name == "up" then -1 else 1), 1, math.max(#list, 1))
-		elseif name == "enter" then
-			local o = list[pop.cursor]
-			if o then
-				M.choose(d, o.id, c, cx)
-			end
-		else
-			local what = Field.edit_key(pop.q, k, cx)
-			if what == "text" then
-				pop.cursor = 1
-			end
-			return what ~= nil
-		end
-		return true
+	if d.pop then
+		return M.popKey(d, k, c, cx)
 	end
 	local focus = d.focus
 	if focus then
@@ -404,8 +424,8 @@ function M.key(d: Draft, k: Key, c: Ctx, cx: BlockCx): ("submit" | "close" | boo
 		M.focus(d, "title", cx)
 		return true
 	end
-	local kind = if k.shift then SHIFTED[name] else SHORTCUTS[name]
-	if kind and not (k.ctrl or k.meta or k.alt) then
+	local kind = M.shortcut(k, true)
+	if kind then
 		M.openPop(d, kind :: Kind, cx)
 		return true
 	end
@@ -488,7 +508,7 @@ local KEYS: { [Kind]: string } = {
 	project = "Shift+P", cycle = "Shift+C", due = "Shift+D", template = "T",
 }
 
-local function chip(d: Draft, kind: Kind, c: Ctx): Node
+function M.chip(d: Draft, kind: Kind, c: Ctx): Node
 	local text, set = chipText(d, kind, c)
 	local lead: Node? = nil
 	if kind == "status" then
@@ -512,7 +532,7 @@ local PLACEHOLDER: { [Kind]: string } = {
 	due = "YYYY-MM-DD or pick below", template = "Use a template…",
 }
 
-local function popover(d: Draft, c: Ctx): Node
+function M.popover(d: Draft, c: Ctx): Node
 	local pop = d.pop :: Pop
 	local rows: { Node } = {}
 	-- Status, priority and due date need nothing fetched.
@@ -547,7 +567,7 @@ local function popover(d: Draft, c: Ctx): Node
 	end
 	return {
 		k = "overlay",
-		p = { key = "pop", role = ROLE .. "pop", aria = PLACEHOLDER[pop.kind], anchor = { node = MODAL .. ".chips." .. pop.kind, side = "below" }, size = "sm" },
+		p = { key = "pop", role = ROLE .. "pop", aria = PLACEHOLDER[pop.kind], anchor = { node = d.anchor .. "." .. pop.kind, side = "below" }, size = "sm" },
 		c = {
 			Field.node("input", { key = "q", role = ROLE .. "pop-q", placeholder = PLACEHOLDER[pop.kind] }, pop.q, "", SEARCH),
 			el("div", "pop-list", "opts", { class = "lt-pop-list" }, rows),
@@ -555,8 +575,8 @@ local function popover(d: Draft, c: Ctx): Node
 	} :: any
 end
 
--- The layer's children: the modal, and the open popover anchored to its chip.
-function M.view(d: Draft, c: Ctx): { Node }
+-- The property chips the team uses, in Linear's order (estimate and cycle only when on).
+function M.kinds(c: Ctx): { Kind }
 	local kinds: { Kind } = { "status", "priority", "assignee", "labels" }
 	local meta = c.meta
 	if meta and #Model.estimateOptions(meta.estimation) > 0 then
@@ -567,16 +587,21 @@ function M.view(d: Draft, c: Ctx): { Node }
 		table.insert(kinds, "cycle")
 	end
 	table.insert(kinds, "due")
+	return kinds
+end
+
+-- The layer's children: the modal, and the open popover anchored to its chip.
+function M.view(d: Draft, c: Ctx): { Node }
 	local chips: { Node } = {}
-	for _, kind in kinds do
-		table.insert(chips, chip(d, kind :: Kind, c))
+	for _, kind in M.kinds(c) do
+		table.insert(chips, M.chip(d, kind :: Kind, c))
 	end
 	local body: { Node } = {
 		el("div", "modal-top", "top", { class = "lt-modal-top" }, {
 			el("span", "ws", "team", { class = "lt-ws", text = c.teamKey }),
 			el("span", "modal-crumb", "crumb", { class = "lt-modal-crumb", text = "› New issue" }),
 			el("span", "spacer", "sp", { class = "lt-spacer" }),
-			chip(d, "template", c),
+			M.chip(d, "template", c),
 		}),
 		Field.node("input", { key = "title", role = ROLE .. "modal-title", placeholder = "Issue title" }, d.title, "", fieldPath(d, "title")),
 		Field.node("editor", { key = "desc", role = ROLE .. "modal-desc", placeholder = "Add description…" }, d.desc, "", fieldPath(d, "desc")),
@@ -599,7 +624,7 @@ function M.view(d: Draft, c: Ctx): { Node }
 		ui.node("overlay", { key = "create", role = ROLE .. "modal", aria = "New issue", size = "lg", modal = true }, body),
 	}
 	if d.pop then
-		table.insert(out, popover(d, c))
+		table.insert(out, M.popover(d, c))
 	end
 	return out
 end
@@ -608,7 +633,7 @@ end
 function M.act(d: Draft, name: string, value: string, c: Ctx, cx: BlockCx): ("submit" | "close" | boolean)
 	if name == "cm-pop" then
 		if d.pop and d.pop.kind == value then
-			closePop(d, cx)
+			M.closePop(d, cx)
 		else
 			M.openPop(d, value :: Kind, cx)
 		end

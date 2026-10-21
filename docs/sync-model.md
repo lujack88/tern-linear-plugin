@@ -1,6 +1,6 @@
 # Sync model
 
-How version 0.4.0 keeps the Board in step with Linear.
+How version 0.5.0 keeps the Board in step with Linear.
 
 ## Host and window halves
 
@@ -90,6 +90,28 @@ shown as Markdown (`model.markdown`).
 The modal closes as soon as the request is sent, and the issue shows as
 "Creating…" in its column. A failure reopens the modal with the draft when it was
 closed; with Create more on, the failed title is named in the error toast.
+
+## The issue view
+
+The board's issue fields include `dueDate`, `project` and `cycle`, so the view's
+property chips come straight from the board issue. Opening an issue fetches only
+what the board lacks (`linear.DETAIL`): the Markdown `description`, the creator,
+`createdAt` and up to 100 comments. Choices for the lists come from `linear.META`,
+fetched when none are loaded yet.
+
+Edits use the board's own write path (`push`, with the overlay and undo):
+
+- **Title**: `rename`, when the title field loses the caret.
+- **Description**: `issueUpdate { description }`, when the field loses the caret
+  and the text changed.
+- **Status**: `move`.
+- **Other properties**: one `issueUpdate` with just the changed fields (`null`
+  when cleared), and an undo that writes the old values back.
+- **Comment**: `commentCreate { issueId, body }`, appended when Linear confirms.
+
+Linear's values flow into every field the caret is not in. The chips take them
+only while no write to the issue is in flight, so a refused write snaps back. The
+view closes by itself when the issue leaves the board.
 
 ## Optimistic overlay
 

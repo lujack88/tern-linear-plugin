@@ -54,6 +54,26 @@ error.
 
 The View and the Mine toggle are remembered.
 
+## The issue view
+
+Click an issue (or select it with the arrow keys and press `Enter`) to open it in
+place of the board, as Linear's list does:
+
+- **Title**: edit it in place. It saves on `Enter`, `Tab`, `Esc` or a click elsewhere.
+- **Description**: shown as Markdown. Click it to edit, and it saves when you leave
+  it (`Esc`, `Ctrl+Enter`, `Tab` or a click elsewhere).
+- **Properties** (right): the same chips and lists as the New issue modal (Status,
+  Priority, Assignee, Labels, Estimate, Project, Cycle, Due date), with the same
+  shortcuts. Each change is written to Linear at once.
+- **Activity**: who created the issue, then the comments, oldest first. Write a
+  comment in the box at the bottom and send it with **Comment** or `Ctrl+Enter`.
+- **Header**: `←` back to the board (`Esc`), **Open in Linear ↗**, and
+  **Cancel issue** (click twice).
+
+`J` / `K` open the next or previous issue in the board's order. Every edit offers
+the usual one-step undo. Times are shown in UTC. Comments can be read and added
+here, not edited or deleted.
+
 ## Moving an issue
 
 - Mouse: click the grip `⠿`, then click the destination column or group.

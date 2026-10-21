@@ -5,7 +5,7 @@ local M = {}
 
 local ENDPOINT = "https://api.linear.app/graphql"
 
-local ISSUE_FIELDS = "id identifier title url updatedAt priority estimate team { id key } state { id name type } assignee { id name displayName } labels(first: 10) { nodes { id name color } }"
+local ISSUE_FIELDS = "id identifier title url updatedAt priority estimate team { id key } state { id name type } assignee { id name displayName } labels(first: 10) { nodes { id name color } } dueDate project { id name } cycle { id number name }"
 
 M.VIEWER = "query { viewer { id name organization { id name urlKey } } }"
 
@@ -36,6 +36,13 @@ M.ISSUES = "query($teamId: ID!, $since: DateTimeOrDuration!, $after: String) { "
 M.UPDATE = "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { "
 	.. ISSUE_FIELDS
 	.. " } } }"
+
+-- What the issue view adds to a board issue: the description, who created it, and the comments.
+M.DETAIL = "query($id: String!) { issue(id: $id) { id description createdAt creator { name } "
+	.. "comments(first: 100) { nodes { id body createdAt user { id name } botActor { name } } } } }"
+
+M.COMMENT = "mutation($input: CommentCreateInput!) { commentCreate(input: $input) { success "
+	.. "comment { id body createdAt user { id name } botActor { name } } } }"
 
 M.CREATE = "mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { "
 	.. ISSUE_FIELDS
@@ -244,6 +251,45 @@ function M.meta(key: string, teamId: string, cb: (meta: any?, err: string?) -> (
 			cycles = nodes(team.cycles),
 			templates = if type(data.templates) == "table" then data.templates else {},
 		}, nil)
+	end)
+end
+
+-- The issue view's extras for one issue; comments oldest first.
+function M.detail(key: string, id: string, cb: (detail: any?, err: string?) -> ())
+	M.call(key, M.DETAIL, { id = id }, function(data: any, err: string?)
+		if err then
+			cb(nil, err)
+			return
+		end
+		local issue = data.issue
+		if type(issue) ~= "table" then
+			cb(nil, "Linear: issue not found")
+			return
+		end
+		-- Decoded JSON is read-only (protected metatable): copy before sorting or adding to it.
+		local comments = {}
+		for _, cm in nodes(issue.comments) do
+			table.insert(comments, cm)
+		end
+		table.sort(comments, function(a: any, b: any): boolean
+			return (a.createdAt or "") < (b.createdAt or "")
+		end)
+		cb({ id = issue.id, description = issue.description, createdAt = issue.createdAt, creator = issue.creator, comments = comments }, nil)
+	end)
+end
+
+function M.comment(key: string, issueId: string, body: string, cb: (comment: any?, err: string?) -> ())
+	M.call(key, M.COMMENT, { input = { issueId = issueId, body = body } }, function(data: any, err: string?)
+		if err then
+			cb(nil, err)
+			return
+		end
+		local payload = data.commentCreate
+		if type(payload) ~= "table" or payload.success ~= true or type(payload.comment) ~= "table" then
+			cb(nil, "Linear: comment refused")
+			return
+		end
+		cb(payload.comment, nil)
 	end)
 end
 
