@@ -427,7 +427,8 @@ function M.event(d: Draft, ev: UiEvent): boolean
 			elseif ev.ev == "undo" then
 				Field.undo_step(f, false)
 			elseif ev.ev == "focus" and name ~= "q" then
-				d.focus = name :: any
+				-- A click into the title or description takes the keys back from an open list.
+				d.focus, d.pop = name :: any, nil
 			end
 			return true
 		end

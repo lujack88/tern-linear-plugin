@@ -21,7 +21,15 @@ type Edit = { stateId: string, issueId: string, field: Field.Field }
 type Undo = { label: string, at: number, revert: () -> () }
 type State = {
 	cx: BlockCx,
+	-- Bumped when the team changes or the key is withdrawn: callbacks of an older gen are dropped.
 	gen: number,
+	-- Bumped whenever the poll chain restarts (also on a new key for the same team).
+	poll: number,
+	-- Successful writes so far; a fetch that saw one land meanwhile is stale and is redone.
+	edits: number,
+	-- Fetches started, and the newest one whose answer was applied.
+	fetchSeq: number,
+	fetchApplied: number,
 	teamId: string?,
 	key: string?,
 	issues: { any },
@@ -66,9 +74,19 @@ local function alive(pane: number): boolean
 	return false
 end
 
+-- kv raises on read/write errors; the board must not stop syncing over one (the window half guards the same way).
+local function kvGet(key: string): any
+	local ok, value = pcall(tern.kv.get, key)
+	return if ok then value else nil
+end
+
+local function kvSet(key: string, value: any)
+	pcall(tern.kv.set, key, value)
+end
+
 -- The Setup written by the window half, read fresh from kv.
 local function setupOf(): any
-	local s = tern.kv.get("linear-todo.setup")
+	local s = kvGet("linear-todo.setup")
 	return if type(s) == "table" and type(s.teamId) == "string" then s else nil
 end
 
@@ -102,7 +120,7 @@ end
 
 local function saveCache(state: State)
 	if state.teamId then
-		tern.kv.set("linear-todo.cache", {
+		kvSet("linear-todo.cache", {
 			teamId = state.teamId,
 			states = tern.json.array(state.states),
 			issues = tern.json.array(state.issues),
@@ -112,7 +130,7 @@ end
 
 -- The cached issues and States of `teamId`; empty when the cache belongs to another team.
 local function cached(teamId: string): ({ any }, { any })
-	local c = tern.kv.get("linear-todo.cache")
+	local c = kvGet("linear-todo.cache")
 	if type(c) == "table" and c.teamId == teamId and type(c.issues) == "table" and type(c.states) == "table" then
 		return c.issues, c.states
 	end
@@ -160,15 +178,25 @@ local function fetch(state: State, manual: boolean, after: (() -> ())?)
 	end
 	state.loading = true
 	state.cx:render()
-	local g = state.gen
+	local g, edits = state.gen, state.edits
+	state.fetchSeq += 1
+	local seq = state.fetchSeq
 	Linear.fetchBoard(key, teamId, function(issues: { any }?, states: { any }?, err: string?)
 		if g ~= state.gen or not alive(state.cx.pane) then
 			return
 		end
-		if issues and states then
+		if issues and state.edits ~= edits then
+			-- A write landed while this fetch ran, so its pages may predate it: fetch again.
+			fetch(state, manual, after)
+			return
+		end
+		if issues and states and seq < state.fetchApplied then
+			-- A fetch started later already answered; this older snapshot would undo it.
+		elseif issues and states then
+			state.fetchApplied = seq
 			state.issues, state.states, state.fetchedAt, state.error, state.failures = issues, states, nowSec(), nil, 0
 			saveCache(state)
-			tern.kv.set("linear-todo.status", { at = nowSec(), ok = true, issues = #issues })
+			kvSet("linear-todo.status", { at = nowSec(), ok = true, issues = #issues })
 			if not find(state, state.sel) then
 				state.sel = nil
 			end
@@ -183,7 +211,7 @@ local function fetch(state: State, manual: boolean, after: (() -> ())?)
 			local prev = state.error
 			state.error = msg
 			state.failures += 1
-			tern.kv.set("linear-todo.status", { at = nowSec(), ok = false, error = msg, issues = #state.issues })
+			kvSet("linear-todo.status", { at = nowSec(), ok = false, error = msg, issues = #state.issues })
 			if manual or msg ~= prev then
 				state.cx:toast("error", "Linear sync failed", msg)
 			end
@@ -196,17 +224,17 @@ local function fetch(state: State, manual: boolean, after: (() -> ())?)
 	end)
 end
 
-local function schedule(state: State, g: number)
-	local iv = tern.kv.get("linear-todo.interval")
+local function schedule(state: State, p: number)
+	local iv = kvGet("linear-todo.interval")
 	if type(iv) ~= "number" or iv < 30 then
 		iv = 60
 	end
 	local delay = if state.failures > 0 and Linear.retryable(state.error) then math.min(iv * 2 ^ state.failures, 600) else iv
 	tern.timer(delay * 1000, function()
-		if g == state.gen and alive(state.cx.pane) and state.key then
+		if p == state.poll and alive(state.cx.pane) and state.key then
 			-- The next delay is computed after this fetch, so backoff sees its failure.
 			fetch(state, false, function()
-				schedule(state, g)
+				schedule(state, p)
 			end)
 		end
 	end)
@@ -250,6 +278,7 @@ local function push(state: State, id: string, ov: Overlay, input: any, verb: str
 			else
 				upsert(state, issue)
 			end
+			state.edits += 1
 			saveCache(state)
 			if done then
 				done(issue)
@@ -436,17 +465,19 @@ local function submitDraft(state: State)
 	end
 	Linear.create(key, input, function(issue: any?, cerr: string?)
 		state.creating[tmp] = nil
-		if g ~= state.gen or not alive(state.cx.pane) then
+		if not alive(state.cx.pane) then
 			return
 		end
 		if not issue then
+			-- Said even after a team change, so a lost draft never goes unmentioned.
 			state.cx:toast("error", "Create failed: " .. input.title, cerr)
-			if not state.draft then
+			if g == state.gen and not state.draft then
 				d.error = cerr
 				state.draft = d
 			end
-		else
+		elseif g == state.gen then
 			upsert(state, issue)
+			state.edits += 1
 			saveCache(state)
 			local newId = issue.id
 			if cancelId then
@@ -532,11 +563,11 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		if value == "kanban" or value == "list" then
 			-- The field's node path depends on the View.
 			state.view, state.edit = value, nil
-			tern.kv.set("linear-todo.view", value)
+			kvSet("linear-todo.view", value)
 		end
 	elseif name == "mine" then
 		state.mine = not state.mine
-		tern.kv.set("linear-todo.mine", state.mine)
+		kvSet("linear-todo.mine", state.mine)
 		local cols = columnsOf(state)
 		if not visible(cols, state.sel) then
 			state.sel, state.confirm = nil, nil
@@ -1005,20 +1036,24 @@ tern.block.define("board", {
 		local state: State = {
 			cx = cx,
 			gen = 0,
+			poll = 0,
+			edits = 0,
+			fetchSeq = 0,
+			fetchApplied = 0,
 			issues = {},
 			states = {},
 			overlay = {},
 			creating = {},
 			loading = false,
 			failures = 0,
-			view = if tern.kv.get("linear-todo.view") == "list" then "list" else "kanban",
-			mine = tern.kv.get("linear-todo.mine") == true,
+			view = if kvGet("linear-todo.view") == "list" then "list" else "kanban",
+			mine = kvGet("linear-todo.mine") == true,
 		}
 		local s = setupOf()
 		if s then
 			state.teamId = s.teamId
 			state.issues, state.states = cached(s.teamId)
-			local st = tern.kv.get("linear-todo.status")
+			local st = kvGet("linear-todo.status")
 			if type(st) == "table" and st.ok and type(st.at) == "number" then
 				state.fetchedAt = st.at
 			end
@@ -1073,6 +1108,7 @@ tern.block.define("board", {
 				state.key, state.teamId, state.issues, state.states = nil, nil, {}, {}
 				resetBoard(state)
 				state.gen += 1
+				state.poll += 1
 				return
 			end
 			local newKey = if type(ev.key) == "string" and ev.key ~= "" then ev.key else nil
@@ -1083,12 +1119,14 @@ tern.block.define("board", {
 				state.teamId = value
 				state.issues, state.states = cached(value)
 				resetBoard(state)
+				state.gen += 1
 			end
+			-- Same team, new key: writes in flight still belong to this board, so only the poll restarts.
 			state.key = newKey
-			state.gen += 1
-			local g = state.gen
+			state.poll += 1
+			local p = state.poll
 			fetch(state, false, function()
-				schedule(state, g)
+				schedule(state, p)
 			end)
 			return
 		end

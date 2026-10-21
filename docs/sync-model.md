@@ -19,7 +19,9 @@ A window that finds no board pane reads no secret at all.
 
 The window injects again on `window_start`, 300 ms after load (a reload does not
 fire `window_start`), after setup, and up to 3 s after opening a board, to cover
-the block's init race. The block ignores a duplicate key for the same team.
+the block's init race. The block ignores a duplicate key for the same team. A new
+key for the same team only restarts polling; writes already in flight finish
+normally. A different team clears the board.
 
 ## Stored state
 
@@ -56,6 +58,12 @@ One sync is two steps:
 
 Both are cached together. The Mine toggle filters on `assignee.id == viewerId`
 on the board and makes no request.
+
+A fetch takes a snapshot over several requests, so it can predate a write that
+lands while it runs. When a move, rename, cancel, undo or create succeeded during
+a fetch, its answer is discarded and the fetch runs again. An answer older than
+one already applied (a manual sync beside a poll) is ignored. kv read and write
+errors on the host side are swallowed, so they never stop the poll.
 
 Polling runs only while a board pane exists and is armed by a repeating timer, so
 closing the board stops all traffic. Network errors, `429` and `5xx` back off
