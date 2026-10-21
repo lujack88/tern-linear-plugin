@@ -1,0 +1,14 @@
+schema = 1
+id = "linear-todo"
+name = "Linear Taskboard"
+version = "0.4.0"
+description = "A Linear-style Kanban and List board of one Linear team's issues."
+icon = "check"
+host = "host.luau"
+window = "window.luau"
+styles = ["styles.css"]
+
+[[blocks]]
+id = "board"
+title = "Linear"
+palette = false

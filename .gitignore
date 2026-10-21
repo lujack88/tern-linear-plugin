@@ -1,0 +1,4 @@
+tern.d.luau
+.agents/
+.claude/
+skills-lock.json

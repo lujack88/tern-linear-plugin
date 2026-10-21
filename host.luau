@@ -1,0 +1,1097 @@
+--!strict
+-- The Linear board block: every Issue of one team, one column per workflow State, shown as a
+-- Kanban or a List View. Every edit writes to Linear at once (optimistic overlay, then
+-- reconcile) with one-step undo.
+-- The API key arrives from the window half and lives in memory only: never saved, kv'd or logged.
+
+local Linear = require("./linear")
+local Model = require("./model")
+local Field = require("./field")
+local Create = require("./create")
+
+local ui = tern.ui
+local ROLE = "linear-todo."
+local UNDO_MS = 10000
+local PRIO_NAME = { [0] = "No priority", "Urgent", "High", "Medium", "Low" }
+
+type Overlay = Model.Overlay
+type Column = Model.Column
+type ViewName = "kanban" | "list"
+type Edit = { stateId: string, issueId: string, field: Field.Field }
+type Undo = { label: string, at: number, revert: () -> () }
+type State = {
+	cx: BlockCx,
+	gen: number,
+	teamId: string?,
+	key: string?,
+	issues: { any },
+	states: { any },
+	fetchedAt: number?,
+	loading: boolean,
+	error: string?,
+	failures: number,
+	overlay: { [string]: Overlay },
+	sel: string?,
+	lift: string?,
+	dropState: string?,
+	confirm: string?,
+	edit: Edit?,
+	undo: Undo?,
+	creating: { [string]: { stateId: string, title: string } },
+	-- The open "New issue" modal, and the choices it offers (fetched when it opens).
+	draft: Create.Draft?,
+	meta: any?,
+	view: ViewName,
+	mine: boolean,
+}
+
+local function nowSec(): number
+	local ok, t = pcall(os.time)
+	if ok and type(t) == "number" then
+		return t
+	end
+	return math.floor(tern.now() / 1000)
+end
+
+local function alive(pane: number): boolean
+	local ok, panes = pcall(tern.pane.list)
+	if not ok then
+		return true
+	end
+	for _, p in panes do
+		if p.pane == pane then
+			return true
+		end
+	end
+	return false
+end
+
+-- The Setup written by the window half, read fresh from kv.
+local function setupOf(): any
+	local s = tern.kv.get("linear-todo.setup")
+	return if type(s) == "table" and type(s.teamId) == "string" then s else nil
+end
+
+local function find(state: State, id: string?): (any, number?)
+	if not id then
+		return nil, nil
+	end
+	for i, issue in state.issues do
+		if issue.id == id then
+			return issue, i
+		end
+	end
+	return nil, nil
+end
+
+local function upsert(state: State, issue: any)
+	local _, i = find(state, issue.id)
+	if i then
+		state.issues[i] = issue
+	else
+		table.insert(state.issues, issue)
+	end
+end
+
+local function remove(state: State, id: string)
+	local _, i = find(state, id)
+	if i then
+		table.remove(state.issues, i)
+	end
+end
+
+local function saveCache(state: State)
+	if state.teamId then
+		tern.kv.set("linear-todo.cache", {
+			teamId = state.teamId,
+			states = tern.json.array(state.states),
+			issues = tern.json.array(state.issues),
+		})
+	end
+end
+
+-- The cached issues and States of `teamId`; empty when the cache belongs to another team.
+local function cached(teamId: string): ({ any }, { any })
+	local c = tern.kv.get("linear-todo.cache")
+	if type(c) == "table" and c.teamId == teamId and type(c.issues) == "table" and type(c.states) == "table" then
+		return c.issues, c.states
+	end
+	return {}, {}
+end
+
+-- Drops everything tied to the shown issues (on a team change or disconnect).
+local function resetBoard(state: State)
+	state.overlay, state.creating, state.draft, state.meta = {}, {}, nil, nil
+	state.sel, state.lift, state.dropState, state.confirm, state.edit, state.undo = nil, nil, nil, nil, nil, nil
+	state.error, state.failures, state.loading, state.fetchedAt = nil, 0, false, nil
+end
+
+local function columnsOf(state: State): { Column }
+	local s = if state.mine then setupOf() else nil
+	return Model.columns(state.issues, state.states, state.overlay, { mine = s and s.viewerId })
+end
+
+-- The State an issue is shown in, overlay included.
+local function stateIdOf(state: State, id: string?): string?
+	local issue = find(state, id)
+	return if issue then Model.effective(issue, state.overlay) else nil
+end
+
+local function visible(cols: { Column }, id: string?): boolean
+	for _, col in cols do
+		for _, issue in col.issues do
+			if issue.id == id then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- Sync ----------------------------------------------------------------------
+
+-- `after` runs once the fetch finished (not when a newer gen superseded it).
+local function fetch(state: State, manual: boolean, after: (() -> ())?)
+	local key, teamId = state.key, state.teamId
+	if not key or not teamId then
+		state.error = "Not set up — run Linear: setup"
+		state.cx:render()
+		return
+	end
+	state.loading = true
+	state.cx:render()
+	local g = state.gen
+	Linear.fetchBoard(key, teamId, function(issues: { any }?, states: { any }?, err: string?)
+		if g ~= state.gen or not alive(state.cx.pane) then
+			return
+		end
+		if issues and states then
+			state.issues, state.states, state.fetchedAt, state.error, state.failures = issues, states, nowSec(), nil, 0
+			saveCache(state)
+			tern.kv.set("linear-todo.status", { at = nowSec(), ok = true, issues = #issues })
+			if not find(state, state.sel) then
+				state.sel = nil
+			end
+			if not find(state, state.lift) then
+				state.lift, state.dropState = nil, nil
+			end
+			if manual then
+				state.cx:toast("success", "Linear synced", #issues .. " issues")
+			end
+		else
+			local msg = err or "unknown error"
+			local prev = state.error
+			state.error = msg
+			state.failures += 1
+			tern.kv.set("linear-todo.status", { at = nowSec(), ok = false, error = msg, issues = #state.issues })
+			if manual or msg ~= prev then
+				state.cx:toast("error", "Linear sync failed", msg)
+			end
+		end
+		state.loading = false
+		state.cx:render()
+		if after then
+			after()
+		end
+	end)
+end
+
+local function schedule(state: State, g: number)
+	local iv = tern.kv.get("linear-todo.interval")
+	if type(iv) ~= "number" or iv < 30 then
+		iv = 60
+	end
+	local delay = if state.failures > 0 and Linear.retryable(state.error) then math.min(iv * 2 ^ state.failures, 600) else iv
+	tern.timer(delay * 1000, function()
+		if g == state.gen and alive(state.cx.pane) and state.key then
+			-- The next delay is computed after this fetch, so backoff sees its failure.
+			fetch(state, false, function()
+				schedule(state, g)
+			end)
+		end
+	end)
+end
+
+-- Mutations -----------------------------------------------------------------
+
+-- Offers `revert` for UNDO_MS; the bar hides itself on the re-render after that.
+local function offer(state: State, label: string, revert: () -> ())
+	local u: Undo = { label = label, at = tern.now(), revert = revert }
+	state.undo = u
+	tern.timer(UNDO_MS + 500, function()
+		if state.undo == u and alive(state.cx.pane) then
+			state.cx:render()
+		end
+	end)
+end
+
+-- Optimistic update: shows `ov` now, writes `input`, then takes Linear's answer.
+-- `ov.gone` removes the issue on success; `done` runs after a success.
+local function push(state: State, id: string, ov: Overlay, input: any, verb: string, done: ((issue: any) -> ())?)
+	local key = state.key
+	if not key then
+		return
+	end
+	local g = state.gen
+	state.overlay[id] = ov
+	state.cx:render()
+	Linear.update(key, id, input, function(issue: any?, err: string?)
+		if g ~= state.gen or not alive(state.cx.pane) then
+			return
+		end
+		if state.overlay[id] == ov then
+			state.overlay[id] = nil
+		end
+		if not issue then
+			state.cx:toast("error", verb .. " failed", err)
+		else
+			if ov.gone then
+				remove(state, id)
+			else
+				upsert(state, issue)
+			end
+			saveCache(state)
+			if done then
+				done(issue)
+			end
+		end
+		state.cx:render()
+	end)
+end
+
+local function move(state: State, id: string, stateId: string)
+	local issue = find(state, id)
+	local target = Model.stateById(state.states, stateId)
+	if not issue or not target or Model.effective(issue, state.overlay) == stateId then
+		return
+	end
+	local ident, prevId = issue.identifier, issue.state.id
+	push(state, id, { stateId = stateId }, { stateId = stateId }, "Move", function()
+		offer(state, "Moved " .. ident .. " to " .. target.name, function()
+			push(state, id, { stateId = prevId }, { stateId = prevId }, "Undo")
+		end)
+	end)
+end
+
+local function rename(state: State, id: string, text: string)
+	local title = string.match(text, "^%s*(.-)%s*$") or ""
+	local issue = find(state, id)
+	if not issue or title == "" then
+		return
+	end
+	local _, shown = Model.effective(issue, state.overlay)
+	if title == shown then
+		return
+	end
+	local ident, prev = issue.identifier, issue.title
+	push(state, id, { title = title }, { title = title }, "Rename", function()
+		offer(state, "Renamed " .. ident, function()
+			push(state, id, { title = prev }, { title = prev }, "Undo")
+		end)
+	end)
+end
+
+local function cancel(state: State, id: string)
+	local issue = find(state, id)
+	if not issue then
+		return
+	end
+	local cancelId = Model.cancelState(state.states)
+	if not cancelId then
+		state.cx:toast("error", "Cancel failed", "This team has no canceled state")
+		return
+	end
+	local ident, prevId = issue.identifier, issue.state.id
+	push(state, id, { gone = true }, { stateId = cancelId }, "Cancel", function()
+		offer(state, "Canceled " .. ident, function()
+			-- The issue left state.issues; push's success upserts it back.
+			push(state, id, { stateId = prevId }, { stateId = prevId }, "Undo")
+		end)
+	end)
+end
+
+-- Editing -------------------------------------------------------------------
+
+-- The node path of a column's item list, from the main region root.
+local function listPath(state: State, stateId: string): string
+	return "main." .. (if state.view == "list" then "rows" else "board") .. "." .. stateId .. ".list"
+end
+
+local function fieldPath(state: State, e: Edit): string
+	return listPath(state, stateIdOf(state, e.issueId) or e.stateId) .. "." .. e.issueId .. ".title"
+end
+
+local function startEdit(state: State, e: Edit)
+	state.edit, state.confirm = e, nil
+	state.cx:frame({ { "focus", fieldPath(state, e) .. "_" .. e.field.rev } })
+end
+
+local function endEdit(state: State, refocus: boolean)
+	state.edit = nil
+	if refocus then
+		state.cx:frame({ { "focus", tern.json.null } })
+	end
+end
+
+local function commitEdit(state: State)
+	local e = state.edit
+	if not e then
+		return
+	end
+	endEdit(state, true)
+	rename(state, e.issueId, e.field.text)
+end
+
+local function startRename(state: State, id: string)
+	local issue = find(state, id)
+	if not issue then
+		return
+	end
+	local stateId, title = Model.effective(issue, state.overlay)
+	if not stateId then
+		return
+	end
+	local f = Field.new(title, false, 255)
+	f.anchor, f.cur = 0, Field.length_of(title)
+	state.sel = id
+	startEdit(state, { stateId = stateId, issueId = id, field = f })
+end
+
+-- Create modal --------------------------------------------------------------
+
+local function ctxOf(state: State): Create.Ctx
+	local s = setupOf()
+	return {
+		states = state.states,
+		meta = state.meta,
+		teamKey = if s then s.teamKey else "",
+		teamId = state.teamId or "",
+		viewerId = s and s.viewerId,
+	}
+end
+
+-- Opens the "New issue" modal in `stateId`; `template` opens the template list first.
+-- The choices are fetched on every open (templates and people change), the last ones shown meanwhile.
+local function openDraft(state: State, stateId: string, template: boolean)
+	local s = setupOf()
+	local key, teamId = state.key, state.teamId
+	if not s or not key or not teamId or s.teamId ~= teamId then
+		state.cx:toast("error", "Linear is not set up", "Run Linear: setup")
+		return
+	end
+	if not Model.stateById(state.states, stateId) then
+		return
+	end
+	if state.edit then
+		endEdit(state, false)
+	end
+	local d = Create.new(stateId, if state.mine then s.viewerId else nil)
+	state.draft, state.lift, state.dropState, state.confirm = d, nil, nil, nil
+	if template then
+		Create.openPop(d, "template", state.cx)
+	else
+		Create.focus(d, "title", state.cx)
+	end
+	local g = state.gen
+	Linear.meta(key, teamId, function(meta: any?, err: string?)
+		if g ~= state.gen or not alive(state.cx.pane) then
+			return
+		end
+		if meta then
+			state.meta = meta
+		elseif state.draft then
+			state.cx:toast("error", "Could not load issue options", err)
+		end
+		state.cx:render()
+	end)
+end
+
+local function closeDraft(state: State)
+	state.draft = nil
+	state.cx:frame({ { "focus", tern.json.null } })
+end
+
+-- Sends the modal's issue. The modal closes at once (or clears for "Create more"); a failure
+-- reopens it with the text intact when it was closed.
+local function submitDraft(state: State)
+	local d = state.draft
+	local key, teamId = state.key, state.teamId
+	if not d or not key or not teamId then
+		return
+	end
+	local input, err = Create.input(d, teamId)
+	if not input then
+		d.error = err
+		return
+	end
+	local cancelId = Model.cancelState(state.states)
+	local g = state.gen
+	-- Node keys join into dotted ids, so the placeholder key must not contain ".".
+	local tmp = string.format("new-%d", math.floor(tern.now() * 1000))
+	state.creating[tmp] = { stateId = d.stateId, title = input.title }
+	if d.more then
+		Create.again(d, state.cx)
+	else
+		closeDraft(state)
+	end
+	Linear.create(key, input, function(issue: any?, cerr: string?)
+		state.creating[tmp] = nil
+		if g ~= state.gen or not alive(state.cx.pane) then
+			return
+		end
+		if not issue then
+			state.cx:toast("error", "Create failed: " .. input.title, cerr)
+			if not state.draft then
+				d.error = cerr
+				state.draft = d
+			end
+		else
+			upsert(state, issue)
+			saveCache(state)
+			local newId = issue.id
+			if cancelId then
+				offer(state, "Created " .. issue.identifier, function()
+					push(state, newId, { gone = true }, { stateId = cancelId }, "Undo")
+				end)
+			end
+		end
+		state.cx:render()
+	end)
+end
+
+-- Actions -------------------------------------------------------------------
+
+local function fresh(state: State): Undo?
+	local u = state.undo
+	return if u and tern.now() - u.at <= UNDO_MS then u else nil
+end
+
+local function act(state: State, name: string, value: string, cx: BlockCx)
+	local d = state.draft
+	if d and string.sub(name, 1, 3) == "cm-" then
+		local r = Create.act(d, name, value, ctxOf(state), cx)
+		if r == "submit" then
+			submitDraft(state)
+		elseif r == "close" then
+			closeDraft(state)
+		end
+		return
+	end
+	if state.lift and name ~= "sel" and name ~= "lift" and name ~= "drop" then
+		state.lift, state.dropState = nil, nil
+	end
+	if name == "sel" then
+		if state.lift then
+			local to, from = stateIdOf(state, value), stateIdOf(state, state.lift)
+			if to and to ~= from then
+				move(state, state.lift, to)
+			end
+			state.lift, state.dropState = nil, nil
+			return
+		end
+		state.sel, state.confirm = value, nil
+	elseif name == "open" then
+		local issue = find(state, value)
+		if issue and type(issue.url) == "string" then
+			cx:open(issue.url)
+		end
+	elseif name == "lift" then
+		if state.lift == value then
+			state.lift, state.dropState = nil, nil
+		else
+			state.lift, state.sel, state.confirm = value, value, nil
+			state.dropState = stateIdOf(state, value)
+		end
+	elseif name == "drop" then
+		local lifted = state.lift
+		if lifted then
+			move(state, lifted, value)
+		end
+		state.lift, state.dropState = nil, nil
+	elseif name == "add" then
+		openDraft(state, value, false)
+	elseif name == "rename" then
+		startRename(state, value)
+	elseif name == "cancel" then
+		state.sel = value
+		if state.confirm == value then
+			state.confirm = nil
+			cancel(state, value)
+		else
+			state.confirm = value
+		end
+	elseif name == "undo" then
+		local u = fresh(state)
+		if u then
+			state.undo = nil
+			u.revert()
+		end
+	elseif name == "sync" then
+		fetch(state, true)
+	elseif name == "view" then
+		if value == "kanban" or value == "list" then
+			-- The field's node path depends on the View.
+			state.view, state.edit = value, nil
+			tern.kv.set("linear-todo.view", value)
+		end
+	elseif name == "mine" then
+		state.mine = not state.mine
+		tern.kv.set("linear-todo.mine", state.mine)
+		local cols = columnsOf(state)
+		if not visible(cols, state.sel) then
+			state.sel, state.confirm = nil, nil
+		end
+	end
+end
+
+-- The first column from index `from` stepping `dir` that has an issue, else nil.
+local function nextFilled(cols: { Column }, from: number, dir: number): Column?
+	local i = from + dir
+	while i >= 1 and i <= #cols do
+		if #cols[i].issues > 0 then
+			return cols[i]
+		end
+		i += dir
+	end
+	return nil
+end
+
+-- Where `c` creates: the selected issue's column, else the first unstarted one, else the first.
+local function defaultColumn(cols: { Column }, selIdx: number?): Column?
+	if selIdx then
+		return cols[selIdx]
+	end
+	for _, col in cols do
+		if col.state.type == "unstarted" then
+			return col
+		end
+	end
+	return cols[1]
+end
+
+local function onKey(state: State, k: Key, cx: BlockCx): boolean?
+	local d = state.draft
+	if d then
+		local r = Create.key(d, k, ctxOf(state), cx)
+		if r == "submit" then
+			submitDraft(state)
+			return true
+		elseif r == "close" then
+			closeDraft(state)
+			return true
+		end
+		return r :: boolean
+	end
+	local e = state.edit
+	if e then
+		local what = Field.edit_key(e.field, k, cx)
+		if what == "submit" then
+			commitEdit(state)
+		elseif what == "blur" then
+			endEdit(state, true)
+		elseif what == nil then
+			return false
+		end
+		return true
+	end
+	local name = k.name
+	local mod = k.ctrl or k.meta
+	if mod and not k.alt and name == "z" then
+		if not fresh(state) then
+			return false
+		end
+		act(state, "undo", "", cx)
+		return true
+	end
+	local cols = columnsOf(state)
+	local selIdx = if visible(cols, state.sel) then Model.columnIndex(cols, stateIdOf(state, state.sel)) else nil
+	if k.alt and not mod and name == "c" then
+		-- Linear's "create from template".
+		local col = defaultColumn(cols, selIdx)
+		if not col then
+			return false
+		end
+		openDraft(state, col.state.id, true)
+		return true
+	end
+	if mod or k.alt then
+		return false
+	end
+	local horizontal = if name == "left" or name == "h" then -1 elseif name == "right" or name == "l" then 1 else 0
+	if horizontal ~= 0 then
+		if k.shift and (name == "left" or name == "right") then
+			local to = if selIdx then cols[selIdx + horizontal] else nil
+			if not to or not state.sel then
+				return false
+			end
+			move(state, state.sel, to.state.id)
+			return true
+		end
+		if state.lift then
+			local at = Model.columnIndex(cols, state.dropState)
+			local to = if at then cols[at + horizontal] else nil
+			if not to then
+				return false
+			end
+			state.dropState = to.state.id
+			return true
+		end
+		local to = nextFilled(cols, selIdx or (if horizontal > 0 then 0 else #cols + 1), horizontal)
+		if not to then
+			return false
+		end
+		state.sel, state.confirm = to.issues[1].id, nil
+		return true
+	end
+	if name == "up" or name == "k" or name == "down" or name == "j" then
+		local dir = if name == "up" or name == "k" then -1 else 1
+		if not selIdx then
+			local to = nextFilled(cols, 0, 1)
+			if not to then
+				return false
+			end
+			state.sel, state.confirm = to.issues[1].id, nil
+			return true
+		end
+		-- Kanban steps within the column; List runs on across the State groups.
+		local seq: { any } = if state.view == "list" then Model.list(cols) else cols[selIdx].issues
+		for i, issue in seq do
+			if issue.id == state.sel then
+				local nxt = seq[i + dir]
+				if not nxt then
+					return false
+				end
+				state.sel, state.confirm = nxt.id, nil
+				return true
+			end
+		end
+		return false
+	end
+	if name == "enter" then
+		if state.lift then
+			act(state, "drop", state.dropState or "", cx)
+		elseif state.sel then
+			act(state, "open", state.sel, cx)
+		else
+			return false
+		end
+		return true
+	elseif name == "space" then
+		if state.lift then
+			act(state, "drop", state.dropState or "", cx)
+		elseif state.sel then
+			act(state, "lift", state.sel, cx)
+		else
+			return false
+		end
+		return true
+	elseif name == "escape" then
+		if state.lift then
+			state.lift, state.dropState = nil, nil
+		elseif state.confirm then
+			state.confirm = nil
+		elseif state.sel then
+			state.sel = nil
+		else
+			return false
+		end
+		return true
+	elseif (name == "r" or name == "f2") and state.sel then
+		act(state, "rename", state.sel, cx)
+		return true
+	elseif name == "c" then
+		local col = defaultColumn(cols, selIdx)
+		if not col then
+			return false
+		end
+		act(state, "add", col.state.id, cx)
+		return true
+	elseif (name == "delete" or name == "backspace") and state.sel then
+		act(state, "cancel", state.sel, cx)
+		return true
+	end
+	return false
+end
+
+-- View ----------------------------------------------------------------------
+
+local function el(tag: string, role: string, key: string, props: { [string]: any }?, children: { Node }?): Node
+	local p: { [string]: any } = props or {}
+	p.role = ROLE .. role
+	p.key = key
+	return ui.el(tag, p, children)
+end
+
+local function region(role: string, kids: { Node }): Node
+	local n: any = ui.col(kids)
+	n.p = n.p or {}
+	n.p.role = ROLE .. role
+	return n
+end
+
+local function flag(on: boolean): string?
+	return if on then "true" else nil
+end
+
+-- Grip, rename and cancel: the per-issue controls of a card or row.
+local function controls(state: State, id: string, into: { Node })
+	local armed = state.confirm == id
+	table.insert(into, el("button", "grip", "grip", {
+		class = "lt-grip",
+		text = "⠿",
+		aria = "Move",
+		title = if state.lift == id then "Cancel move" else "Pick up, then click a column",
+		actions = { click = "lift=" .. id },
+	}))
+	table.insert(into, el("button", "act", "rename", { class = "lt-act", text = "✎", aria = "Rename", title = "Rename", actions = { click = "rename=" .. id } }))
+	table.insert(into, el("button", "act", "cancel", {
+		class = "lt-act lt-del",
+		text = if armed then "Cancel?" else "✕",
+		aria = "Cancel issue",
+		title = if armed then "Click again to cancel the issue" else "Cancel issue",
+		attrs = { ["data-confirm"] = flag(armed) },
+		actions = { click = "cancel=" .. id },
+	}))
+end
+
+local function avatar(issue: any): Node?
+	local a = issue.assignee
+	if type(a) ~= "table" then
+		return nil
+	end
+	-- The full name gives Linear's two-letter initials; displayName is a one-word handle.
+	return el("span", "avatar", "avatar", { class = "lt-avatar", text = Model.initials(a.name or a.displayName), title = a.name })
+end
+
+local function prio(issue: any): Node
+	local pc = Model.prioClass(issue.priority)
+	local bars: { Node }? = nil
+	if pc ~= "p1" then
+		bars = {
+			el("span", "bar", "b1", { class = "lt-bar" }),
+			el("span", "bar", "b2", { class = "lt-bar" }),
+			el("span", "bar", "b3", { class = "lt-bar" }),
+		}
+	end
+	return el("span", "prio", "prio", {
+		class = "lt-prio",
+		attrs = { ["data-p"] = pc },
+		text = if pc == "p1" then "!" else nil,
+		title = PRIO_NAME[tonumber(string.sub(pc, 2)) or 0],
+	}, bars)
+end
+
+-- Labels, then the estimate.
+local function extras(issue: any, into: { Node })
+	local labels = issue.labels and issue.labels.nodes
+	if type(labels) == "table" then
+		for i, l in labels do
+			table.insert(into, el("span", "label", "l" .. i, { class = "lt-label", attrs = { ["data-c"] = Model.labelClass(l.color) } }, {
+				el("span", "dot", "dot", { class = "lt-dot" }),
+				el("span", "label-name", "name", { class = "lt-label-name", text = l.name }),
+			}))
+		end
+	end
+	local est = Model.estimate(issue.estimate)
+	if est then
+		table.insert(into, el("span", "est", "est", { class = "lt-est", text = est, title = "Estimate" }))
+	end
+end
+
+local function titleNode(state: State, issue: any, stateId: string, title: string, max: any): Node
+	local e = state.edit
+	if e and e.issueId == issue.id then
+		return Field.node("input", { key = "title", role = ROLE .. "input" }, e.field, title, listPath(state, stateId) .. "." .. issue.id .. ".title")
+	end
+	return el("div", "title", "title", { class = "lt-title", text = title, max = max })
+end
+
+-- Props shared by a card and a row: selection, pending and drop marks, click and open.
+local function itemProps(state: State, issue: any, class: string, dropHere: boolean): { [string]: any }
+	local id = issue.id
+	return {
+		class = class,
+		attrs = {
+			["data-sel"] = flag(state.sel == id),
+			["data-confirm"] = flag(state.confirm == id),
+			["data-pending"] = flag(state.overlay[id] ~= nil),
+			["data-drop"] = flag(dropHere),
+		},
+		mark = if state.lift == id then "pick" else nil,
+		title = issue.url,
+		actions = { click = "sel=" .. id, dblclick = "open=" .. id },
+	}
+end
+
+local function card(state: State, issue: any, col: Column, liftState: string?): Node
+	local id = issue.id
+	local _, title = Model.effective(issue, state.overlay)
+	local top: { Node } = {
+		el("span", "id", "id", { class = "lt-id", text = issue.identifier }),
+		el("span", "spacer", "sp", { class = "lt-spacer" }),
+	}
+	controls(state, id, top)
+	local av = avatar(issue)
+	if av then
+		table.insert(top, av)
+	end
+	local chips: { Node } = {
+		prio(issue),
+		el("span", "state", "state", { class = "lt-state", attrs = { ["data-type"] = col.state.type }, title = col.state.name }),
+	}
+	extras(issue, chips)
+	return el("div", "card", id, itemProps(state, issue, "lt-card", liftState ~= nil and col.state.id ~= liftState), {
+		el("div", "top", "top", { class = "lt-top" }, top),
+		titleNode(state, issue, col.state.id, title, { h = "2lines" }),
+		el("div", "chips", "chips", { class = "lt-chips" }, chips),
+	})
+end
+
+local function row(state: State, issue: any, col: Column, liftState: string?): Node
+	local id = issue.id
+	local _, title = Model.effective(issue, state.overlay)
+	local kids: { Node } = {
+		prio(issue),
+		el("span", "id", "id", { class = "lt-id", text = issue.identifier }),
+		titleNode(state, issue, col.state.id, title, nil),
+	}
+	extras(issue, kids)
+	local av = avatar(issue)
+	if av then
+		table.insert(kids, av)
+	end
+	controls(state, id, kids)
+	return el("div", "row", id, itemProps(state, issue, "lt-row", liftState ~= nil and col.state.id ~= liftState), kids)
+end
+
+-- A Kanban column, or a List group when `list`: the same head, with cards or rows under it.
+local function column(state: State, col: Column, liftState: string?, list: boolean): Node
+	local stateId = col.state.id
+	local items: { Node } = {}
+	local itemClass = if list then "lt-row" else "lt-card"
+	for tmp, c in state.creating do
+		if c.stateId == stateId then
+			table.insert(items, el("div", "card", tmp, { class = itemClass, attrs = { ["data-pending"] = "true" } }, {
+				el("div", "title", "title", { class = "lt-title", text = c.title, max = { h = "2lines" } }),
+				el("div", "creating", "creating", { class = "lt-creating", text = "Creating…" }),
+			}))
+		end
+	end
+	for _, issue in col.issues do
+		table.insert(items, if list then row(state, issue, col, liftState) else card(state, issue, col, liftState))
+	end
+	if #items == 0 and not list then
+		table.insert(items, el("div", "none", "empty", { class = "lt-none", text = "No issues" }))
+	end
+	local lifted = liftState ~= nil
+	return el("div", if list then "group" else "col", stateId, {
+		class = if list then "lt-group" else "lt-col",
+		attrs = {
+			["data-drop"] = flag(lifted and stateId ~= liftState),
+			["data-target"] = flag(lifted and stateId == state.dropState),
+		},
+		actions = if lifted then { click = "drop=" .. stateId } else nil,
+	}, {
+		el("div", "col-head", "head", { class = "lt-col-head" }, {
+			el("span", "state", "icon", { class = "lt-state", attrs = { ["data-type"] = col.state.type } }),
+			el("span", "col-title", "label", { class = "lt-col-title", text = col.state.name }),
+			el("span", "col-count", "count", { class = "lt-col-count", text = tostring(#col.issues) }),
+			el("span", "spacer", "sp", { class = "lt-spacer" }),
+			el("button", "add", "add", { class = "lt-add", text = "+", aria = "New issue", title = "New issue in " .. col.state.name, actions = { click = "add=" .. stateId } }),
+		}),
+		el("div", "list", "list", { class = if list then "lt-rows" else "lt-list" }, items),
+	})
+end
+
+local function tab(state: State, name: ViewName, text: string): Node
+	local on = state.view == name
+	return el("button", "tab", name, { class = "lt-tab", text = text, attrs = { ["data-on"] = flag(on), ["aria-pressed"] = if on then "true" else "false" }, actions = { click = "view=" .. name } })
+end
+
+local function header(state: State, count: number): { Node }
+	local s = setupOf()
+	local status: Node
+	if state.loading then
+		status = el("span", "status", "status", { class = "lt-sync" }, { ui.node("spinner", { style = "dots" }) })
+	else
+		local at = state.fetchedAt
+		local ok, hm = pcall(os.date, "%H:%M", at)
+		status = el("span", "status", "status", { class = "lt-sync", text = if at and ok and type(hm) == "string" then "Synced " .. hm else "" })
+	end
+	local out: { Node } = {
+		el("div", "head", "head", { class = "lt-head" }, {
+			el("span", "ws", "ws", { class = "lt-ws", text = if s and s.teamKey then s.teamKey else "Linear" }),
+			el("div", "tabs", "tabs", { class = "lt-tabs" }, { tab(state, "kanban", "Kanban"), tab(state, "list", "List") }),
+			el("button", "mine", "mine", {
+				class = "lt-tab lt-mine",
+				text = "Mine",
+				title = if state.mine then "Showing your issues; click for the whole team" else "Show only your issues",
+				attrs = { ["data-on"] = flag(state.mine), ["aria-pressed"] = if state.mine then "true" else "false" },
+				actions = { click = "mine" },
+			}),
+			el("span", "count", "count", { class = "lt-count", text = tostring(count) }),
+			el("span", "spacer", "sp", { class = "lt-spacer" }),
+			status,
+			el("button", "refresh", "sync", { class = "lt-refresh", text = "↻", aria = "Sync now", title = "Sync now", actions = { click = "sync" } }),
+		}),
+	}
+	if state.error then
+		table.insert(out, el("div", "error", "error", { class = "lt-error", tone = "error", text = state.error }))
+	end
+	return out
+end
+
+local function dock(state: State): Node?
+	local function ident(id: string?): string
+		local issue = find(state, id)
+		return if issue then issue.identifier else "issue"
+	end
+	local kid: Node
+	if state.confirm then
+		kid = el("div", "hint", "hint", { class = "lt-hint", text = "Press Delete again to cancel " .. ident(state.confirm) })
+	elseif state.lift then
+		local target = Model.stateById(state.states, state.dropState)
+		local to = if target then " to " .. target.name else ""
+		kid = el("div", "hint", "hint", { class = "lt-hint", text = "Moving " .. ident(state.lift) .. to .. " — click a State or press Enter · Esc cancels" })
+	else
+		local u = fresh(state)
+		if not u then
+			return nil
+		end
+		kid = el("div", "undo", "undo", { class = "lt-undo" }, {
+			el("span", "undo-label", "label", { class = "lt-undo-label", text = u.label }),
+			el("button", "undo-btn", "btn", { class = "lt-undo-btn", text = "Undo", aria = "Undo", actions = { click = "undo" } }),
+		})
+	end
+	return region("dock", { kid })
+end
+
+local function empty(kids: { Node }, text: string): BlockView
+	table.insert(kids, el("div", "empty", "empty", { class = "lt-empty", text = text }))
+	return { main = region("main", kids) }
+end
+
+local function view(state: State): BlockView
+	local cols = columnsOf(state)
+	local kids = header(state, #Model.list(cols))
+	if not state.teamId then
+		return empty(kids, "Linear is not set up. Run Linear: setup and paste a personal API key.")
+	elseif not state.key then
+		return empty(kids, "Connecting…")
+	elseif #cols == 0 then
+		return empty(kids, if state.loading then "Loading…" else "No workflow states loaded yet.")
+	end
+	local liftState = stateIdOf(state, state.lift)
+	local list = state.view == "list"
+	local nodes: { Node } = {}
+	for _, col in cols do
+		table.insert(nodes, column(state, col, liftState, list))
+	end
+	if list then
+		table.insert(kids, el("div", "rows", "rows", { class = "lt-listview" }, nodes))
+	else
+		table.insert(kids, el("div", "board", "board", { class = "lt-board" }, nodes))
+	end
+	local d = state.draft
+	return { main = region("main", kids), dock = dock(state), layer = if d then region("layer", Create.view(d, ctxOf(state))) else nil }
+end
+
+-- Block ---------------------------------------------------------------------
+
+tern.block.define("board", {
+	features = { "edit", "undo" },
+
+	init = function(cx: BlockCx, _args: { string }, _saved: any): State
+		local state: State = {
+			cx = cx,
+			gen = 0,
+			issues = {},
+			states = {},
+			overlay = {},
+			creating = {},
+			loading = false,
+			failures = 0,
+			view = if tern.kv.get("linear-todo.view") == "list" then "list" else "kanban",
+			mine = tern.kv.get("linear-todo.mine") == true,
+		}
+		local s = setupOf()
+		if s then
+			state.teamId = s.teamId
+			state.issues, state.states = cached(s.teamId)
+			local st = tern.kv.get("linear-todo.status")
+			if type(st) == "table" and st.ok and type(st.at) == "number" then
+				state.fetchedAt = st.at
+			end
+		end
+		return state
+	end,
+
+	title = function(state: State): string?
+		local s = setupOf()
+		return "Linear · " .. (if s and s.teamKey then s.teamKey else "not set up")
+	end,
+
+	view = function(state: State, _cx: BlockCx): BlockView
+		return view(state)
+	end,
+
+	key = onKey,
+
+	event = function(state: State, ev: UiEvent, cx: BlockCx)
+		local d = state.draft
+		if d and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
+			Create.event(d, ev)
+			return
+		end
+		local e = state.edit
+		if ev.ev == "edit" or ev.ev == "undo" then
+			if e and ev.id == e.field.id then
+				if ev.ev == "undo" then
+					Field.undo_step(e.field, false)
+				else
+					Field.apply_edit(e.field, ev)
+				end
+			elseif ev.ev == "undo" and not e then
+				-- The "undo" feature turns ⌃Z/⌘Z into this event, so it never reaches `key`.
+				act(state, "undo", "", cx)
+			end
+			return
+		end
+		if ev.ev == "focus" then
+			if e and ev.id ~= e.field.id then
+				endEdit(state, false)
+			end
+			return
+		end
+		if ev.ev ~= "action" or type(ev.act) ~= "string" then
+			return
+		end
+		local value = if type(ev.value) == "string" then ev.value else ""
+		-- From the window half: `value` is the Setup's team id, `key` the API key; never log this event.
+		if ev.act == "key" then
+			if value == "" then
+				state.key, state.teamId, state.issues, state.states = nil, nil, {}, {}
+				resetBoard(state)
+				state.gen += 1
+				return
+			end
+			local newKey = if type(ev.key) == "string" and ev.key ~= "" then ev.key else nil
+			if value == state.teamId and newKey == state.key then
+				return
+			end
+			if value ~= state.teamId then
+				state.teamId = value
+				state.issues, state.states = cached(value)
+				resetBoard(state)
+			end
+			state.key = newKey
+			state.gen += 1
+			local g = state.gen
+			fetch(state, false, function()
+				schedule(state, g)
+			end)
+			return
+		end
+		act(state, ev.act, value, cx)
+	end,
+})
