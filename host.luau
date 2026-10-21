@@ -1546,7 +1546,13 @@ tern.block.define("board", {
 	event = function(state: State, ev: UiEvent, cx: BlockCx)
 		local d = state.draft
 		if d and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
+			local was = d.focus
 			Create.event(d, ev)
+			-- A click into the description editor reports focus without taking Tern's caret off
+			-- the title, so a later click on the title sent nothing. Move the caret explicitly.
+			if d.focus and d.focus ~= was then
+				Create.focus(d, d.focus, cx)
+			end
 			return
 		end
 		local dt = state.detail
