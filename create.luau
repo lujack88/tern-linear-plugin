@@ -567,7 +567,8 @@ function M.popover(d: Draft, c: Ctx): Node
 	end
 	return {
 		k = "overlay",
-		p = { key = "pop", role = ROLE .. "pop", aria = PLACEHOLDER[pop.kind], anchor = { node = d.anchor .. "." .. pop.kind, side = "below" }, size = "sm" },
+		-- The template chip sits in the modal's top row, not among the property chips.
+		p = { key = "pop", role = ROLE .. "pop", aria = PLACEHOLDER[pop.kind], anchor = { node = if pop.kind == "template" then d.root .. ".top.template" else d.anchor .. "." .. pop.kind, side = "below" }, size = "sm" },
 		c = {
 			Field.node("input", { key = "q", role = ROLE .. "pop-q", placeholder = PLACEHOLDER[pop.kind] }, pop.q, "", SEARCH),
 			el("div", "pop-list", "opts", { class = "lt-pop-list" }, rows),
