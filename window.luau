@@ -115,7 +115,10 @@ local function inject(cx: WindowCx)
 	local s = active()
 	local panes = boardPanes(cx)
 	if not s then
-		send(cx, panes, { ev = "action", act = "key", value = "" })
+		-- While 0.5's setup awaits its upgrade the board keeps what it shows.
+		if kvGet(P .. "legacy") == nil then
+			send(cx, panes, { ev = "action", act = "key", value = "" })
+		end
 		return
 	end
 	if #panes == 0 then
@@ -126,12 +129,17 @@ local function inject(cx: WindowCx)
 	local function step(i: number, cx2: WindowCx)
 		local w = list[i]
 		if not w then
-			local key = keys[s.orgId]
-			if not key then
-				cx2:toast("error", "Missing Linear API key for " .. s.orgName, "Run Linear: add workspace")
+			-- Re-read: the board may have switched workspace while the keychain answered.
+			local cur = active()
+			local key = cur and keys[cur.orgId]
+			if not cur or not key then
+				-- A workspace newer than this read gets its own inject.
+				if cur and cur.orgId == s.orgId then
+					cx2:toast("error", "Missing Linear API key for " .. cur.orgName, "Add the workspace again")
+				end
 				return
 			end
-			send(cx2, boardPanes(cx2), { ev = "action", act = "key", value = s.teamId, key = key, keys = keys })
+			send(cx2, boardPanes(cx2), { ev = "action", act = "key", value = cur.teamId, key = key, keys = keys })
 			return
 		end
 		tern.secrets.get(secretName(w.orgId)):next(function(key, err, cx3)
@@ -302,38 +310,66 @@ end
 
 local upgrading = false
 
--- Files the single Setup under its organization: a per-workspace keychain entry and the
--- workspace list. Nothing is deleted before the new entries are stored.
+-- Files 0.5's key under its organization. The old team is first parked in kv `legacy`, so
+-- neither a failed attempt (retried on the next window start) nor a workspace added
+-- meanwhile loses it; nothing old is deleted before the new entries are stored.
 local function upgrade(cx: WindowCx)
 	local s = kvGet(P .. "setup")
-	if upgrading or type(s) ~= "table" or type(s.teamId) ~= "string" or valid(s) then
+	if type(s) == "table" and type(s.teamId) == "string" and not valid(s) then
+		kvSet(P .. "legacy", { teamId = s.teamId, teamKey = s.teamKey })
+	end
+	local legacy = kvGet(P .. "legacy")
+	if upgrading or type(legacy) ~= "table" or type(legacy.teamId) ~= "string" then
 		return
 	end
 	upgrading = true
+	local function fail(cx: WindowCx?, title: string, sub: string?)
+		upgrading = false
+		if cx then
+			cx:toast("error", title, sub)
+		end
+	end
 	tern.secrets.get("key"):next(function(key, err, cx)
-		if not cx then
-			return
-		end
 		if err or type(key) ~= "string" or key == "" then
-			cx:toast("info", "Linear Taskboard: the stored key is gone", "Run Linear: add workspace")
+			-- No old key: nothing to carry over.
+			kvSet(P .. "legacy", nil)
+			upgrading = false
+			if cx then
+				inject(cx)
+			end
 			return
 		end
-		query(key, Linear.VIEWER, "Linear Taskboard: the stored key was rejected", function(data, cx)
+		Linear.call(key, Linear.VIEWER, nil, function(data, qerr, cx)
+			if qerr or type(data) ~= "table" or type(data.viewer) ~= "table" then
+				fail(cx, "Linear Taskboard: could not upgrade the stored key", qerr)
+				return
+			end
 			local org = data.viewer.organization
 			tern.secrets.set(secretName(org.id), key):next(function(_, serr, cx)
-				if not cx or serr then
-					if cx then
-						cx:toast("error", "Could not update the keychain", serr)
+				if serr or not cx then
+					fail(cx, "Could not update the keychain", serr)
+					return
+				end
+				local w: Workspace = { orgId = org.id, orgName = org.name, orgUrlKey = org.urlKey, viewerId = data.viewer.id, teamId = legacy.teamId, teamKey = legacy.teamKey }
+				-- Merge into the list as it is now; a workspace added meanwhile wins over the old one.
+				local list = workspaces()
+				local known = false
+				for _, other in list do
+					if other.orgId == w.orgId then
+						known = true
 					end
+				end
+				if not known then
+					table.insert(list, w)
+				end
+				if not kvSet(P .. "workspaces", tern.json.array(list)) or (not active() and not kvSet(P .. "setup", w)) then
+					fail(cx, "Could not save the Linear workspace")
 					return
 				end
-				local w: Workspace = { orgId = org.id, orgName = org.name, orgUrlKey = org.urlKey, viewerId = data.viewer.id, teamId = s.teamId, teamKey = s.teamKey }
-				if not kvSet(P .. "workspaces", tern.json.array({ w })) or not kvSet(P .. "setup", w) then
-					cx:toast("error", "Could not save the Linear workspace")
-					return
-				end
+				kvSet(P .. "legacy", nil)
 				kvSet(P .. "cache", nil)
 				tern.secrets.set("key", nil)
+				upgrading = false
 				inject(cx)
 			end)
 		end)

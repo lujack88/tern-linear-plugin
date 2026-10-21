@@ -502,7 +502,7 @@ local function openDraft(state: State, stateId: string, template: boolean)
 		endEdit(state, false)
 	end
 	local d = Create.new(stateId, if state.mine then s.viewerId else nil)
-	state.draft, state.lift, state.dropState, state.confirm = d, nil, nil, nil
+	state.draft, state.lift, state.dropState, state.confirm, state.switcher = d, nil, nil, nil, false
 	if template then
 		Create.openPop(d, "template", state.cx)
 	else
@@ -592,7 +592,7 @@ local function openDetail(state: State, id: string)
 	end
 	local stateId, title = Model.effective(issue, state.overlay)
 	local dt = Detail.new(issue, stateId or issue.state.id, title)
-	state.detail, state.sel, state.lift, state.dropState, state.confirm = dt, id, nil, nil, nil
+	state.detail, state.sel, state.lift, state.dropState, state.confirm, state.switcher = dt, id, nil, nil, nil, false
 	state.cx:frame({ { "focus", tern.json.null } })
 	if not state.meta then
 		loadMeta(state)
@@ -649,7 +649,12 @@ local function saveDescription(state: State, dt: Detail.Detail)
 			end)
 		end)
 	end, function()
+		-- Keep what was typed: reopen the editor on it, so leaving it again retries the save.
 		info.description = prev
+		if state.detail == dt and dt.d.desc.text == text and not dt.d.focus then
+			dt.commenting = false
+			Create.focus(dt.d, "desc", state.cx)
+		end
 	end)
 end
 
@@ -694,6 +699,17 @@ local function saveProps(state: State, dt: Detail.Detail, before: any)
 		move(state, dt.id, after.stateId)
 	end
 	local input, back = Detail.changes(before, after)
+	local labels = issue.labels
+	if input and input.labelIds and type(labels) == "table" and type(labels.pageInfo) == "table" and labels.pageInfo.hasNextPage then
+		-- The board knows only the first 50 labels; writing the list would drop the rest.
+		input.labelIds = nil
+		local b: any = back
+		b.labelIds = nil
+		state.cx:toast("error", "Edit this issue's labels in Linear", "It has more than 50, more than the board loads")
+		if next(input) == nil then
+			input = nil
+		end
+	end
 	if input then
 		local id, ident = dt.id, issue.identifier
 		push(state, id, overlayFor(state, id), input, "Update", function()
@@ -745,8 +761,13 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 	end
 	local dt = state.detail
 	if dt and (string.sub(name, 1, 3) == "cm-" or string.sub(name, 1, 3) == "dt-") then
-		local before = Detail.snapshot(dt.d)
+		local before, left = Detail.snapshot(dt.d), dt.d.focus
 		local r = Detail.act(dt, name, value, ctxOf(state), cx)
+		-- A click that takes the caret out of the title or description (or closes the view)
+		-- saves that field first; `refresh` would otherwise put Linear's value back.
+		if left and (dt.d.focus ~= left or r == "close") then
+			runDetail(state, dt, left)
+		end
 		if type(r) == "string" then
 			runDetail(state, dt, r)
 		end
@@ -895,6 +916,8 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 			end
 			return true
 		end
+		-- The open menu takes every other key too, so nothing acts on the board behind it.
+		return true
 	end
 	local e = state.edit
 	if e then
@@ -1311,7 +1334,8 @@ local function dock(state: State): Node?
 	end
 	local kid: Node
 	if state.confirm then
-		kid = el("div", "hint", "hint", { class = "lt-hint", text = "Press Delete again to cancel " .. ident(state.confirm) })
+		local again = if state.detail then "Click Cancel issue again to cancel " else "Press Delete again to cancel "
+		kid = el("div", "hint", "hint", { class = "lt-hint", text = again .. ident(state.confirm) })
 	elseif state.lift then
 		local target = Model.stateById(state.states, state.dropState)
 		local to = if target then " to " .. target.name else ""
@@ -1475,7 +1499,7 @@ tern.block.define("board", {
 		-- From the window half: `value` is the Setup's team id, `key` the API key; never log this event.
 		if ev.act == "key" then
 			if value == "" then
-				state.key, state.teamId, state.issues, state.states = nil, nil, {}, {}
+				state.key, state.teamId, state.issues, state.states, state.keys = nil, nil, {}, {}, {}
 				resetBoard(state)
 				state.gen += 1
 				state.poll += 1

@@ -258,9 +258,8 @@ function M.act(dt: Detail, name: string, value: string, c: Create.Ctx, cx: Block
 		Create.focus(dt.d, "desc", cx)
 		return true
 	elseif name == "dt-comment" then
-		local left = dt.d.focus
 		M.focusComment(dt, cx)
-		return left or true
+		return true
 	elseif string.sub(name, 1, 3) == "cm-" then
 		return Create.act(dt.d, name, value, c, cx) == true
 	end
