@@ -3,30 +3,41 @@
 A Tern host + window plugin that shows every Issue of one Linear team as a
 Linear-style Board, as a Kanban or a List View, and writes every change straight
 back to Linear. The host half renders the board block and talks to Linear; the
-window half holds the commands, the keychain and the Setup.
+window half holds the commands, the keychain and the workspaces.
 
 Open it with **Linear: open board**. The board lives in its own pane and stays in
 step with Linear while that pane exists.
 
-## Setup
+## Workspaces
 
-1. Run **Linear: setup**.
-2. Paste a Linear personal API key. Create one in Linear under
+A workspace is one Linear workspace (organization), its API key, and the team its
+board shows.
+
+**Add one** with **Add workspace…** in the header's workspace menu, or with
+**Linear: add workspace**:
+
+1. Paste a Linear personal API key. Create one in that Linear workspace under
    **Settings → Security & access → Personal API keys**. The key is checked with
    a `viewer` query before anything is stored.
-3. Type the team key (`ENG`). An unknown key shows the valid ones and asks
+2. Type the team key (`ENG`). An unknown key shows the valid ones and asks
    again.
 
-The key is stored in the OS keychain as `plugin.linear-todo.key`. It is never
-written to a file, and the board receives it in memory only. Running setup again
-replaces the key and the team.
+The new workspace becomes the board's. Adding a workspace that is already there
+replaces its key and team (use this to change the team).
 
-Until setup has run, the board shows a "Run Linear: setup" message.
+**Switch** with the workspace button at the left of the board's header. Like
+Linear's workspace menu, it drops down every workspace with its initials, team and
+number: click one or press `1`–`9`; `Esc` closes it. **Add workspace…** at the
+bottom opens the key prompt above, so no command is needed. **Linear: switch
+workspace** does the same from the palette. Every team keeps its own cache, so a
+switch paints the last known board at once and syncs it.
 
-Upgrading from 0.2 (several workspaces): on the first window start the active
-workspace's key is carried over and you are asked once for the team key, prefilled
-with the old "team for new issues". The 0.2 keys and caches are deleted after
-that. Dismissing the prompt keeps the old data; the next window start asks again.
+Each key is stored in the OS keychain as `plugin.linear-todo.key.<orgId>`. Keys
+are never written to a file, and the board receives them in memory only.
+
+Until a workspace is added, the board shows a "Run Linear: add workspace" message.
+Upgrading from 0.5 files the existing key and team as the first workspace on the
+next window start; nothing needs to be pasted again.
 
 ## The Board
 
@@ -140,7 +151,8 @@ cancels the new issue, a cancel restores the previous State.
 | --- | --- |
 | `Linear: open board` | Opens the board pane; if one is already open, re-keys it and syncs it now. |
 | `Linear: sync now` | Syncs the open board immediately. |
-| `Linear: setup` | Pastes the API key and picks the team. |
+| `Linear: add workspace` | Pastes an API key and picks the team; adds the workspace or replaces its key and team. |
+| `Linear: switch workspace` | Picks the workspace the board shows. |
 | `Linear: poll interval` | Seconds between syncs (at least 30). |
 | `Linear: status` | Last sync result, issue count and error. |
 | `Linear: self-test` | Development check of the board model. |

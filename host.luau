@@ -50,6 +50,12 @@ type State = {
 	-- The open "New issue" modal, and the choices it offers (fetched when it opens).
 	draft: Create.Draft?,
 	meta: any?,
+	-- Every workspace's API key by organization id (in memory only), and whether the header's
+	-- workspace switcher is open.
+	keys: { [string]: string },
+	switcher: boolean,
+	-- "Add workspace…" was picked: the title asks the window half to run its key prompt.
+	adding: boolean,
 	-- The issue opened from the board (Linear's issue view), drawn instead of the board.
 	detail: Detail.Detail?,
 	view: ViewName,
@@ -93,6 +99,18 @@ local function setupOf(): any
 	return if type(s) == "table" and type(s.teamId) == "string" then s else nil
 end
 
+-- Every workspace the window half added, in the order they were added.
+local function workspaces(): { any }
+	local out = {}
+	local list = kvGet("linear-todo.workspaces")
+	for _, w in (if type(list) == "table" then list else {}) do
+		if type(w) == "table" and type(w.orgId) == "string" and type(w.teamId) == "string" then
+			table.insert(out, w)
+		end
+	end
+	return out
+end
+
 local function find(state: State, id: string?): (any, number?)
 	if not id then
 		return nil, nil
@@ -123,7 +141,7 @@ end
 
 local function saveCache(state: State)
 	if state.teamId then
-		kvSet("linear-todo.cache", {
+		kvSet("linear-todo.cache." .. state.teamId, {
 			teamId = state.teamId,
 			states = tern.json.array(state.states),
 			issues = tern.json.array(state.issues),
@@ -131,9 +149,9 @@ local function saveCache(state: State)
 	end
 end
 
--- The cached issues and States of `teamId`; empty when the cache belongs to another team.
+-- The cached issues and States of `teamId` (one cache per team, so switching workspaces paints at once).
 local function cached(teamId: string): ({ any }, { any })
-	local c = kvGet("linear-todo.cache")
+	local c = kvGet("linear-todo.cache." .. teamId)
 	if type(c) == "table" and c.teamId == teamId and type(c.issues) == "table" and type(c.states) == "table" then
 		return c.issues, c.states
 	end
@@ -175,7 +193,7 @@ end
 local function fetch(state: State, manual: boolean, after: (() -> ())?)
 	local key, teamId = state.key, state.teamId
 	if not key or not teamId then
-		state.error = "Not set up — run Linear: setup"
+		state.error = "No workspace — run Linear: add workspace"
 		state.cx:render()
 		return
 	end
@@ -227,7 +245,29 @@ local function fetch(state: State, manual: boolean, after: (() -> ())?)
 	end)
 end
 
-local function schedule(state: State, p: number)
+local schedule: (state: State, p: number) -> ()
+
+-- Shows `teamId` with `key` and (re)starts its poll. A new team clears the board; a new key for
+-- the same team only restarts the poll, so writes in flight still land on this board.
+local function connect(state: State, teamId: string, key: string?)
+	if teamId == state.teamId and key == state.key then
+		return
+	end
+	if teamId ~= state.teamId then
+		state.teamId = teamId
+		state.issues, state.states = cached(teamId)
+		resetBoard(state)
+		state.gen += 1
+	end
+	state.key = key
+	state.poll += 1
+	local p = state.poll
+	fetch(state, false, function()
+		schedule(state, p)
+	end)
+end
+
+schedule = function(state: State, p: number)
 	local iv = kvGet("linear-todo.interval")
 	if type(iv) ~= "number" or iv < 30 then
 		iv = 60
@@ -241,6 +281,26 @@ local function schedule(state: State, p: number)
 			end)
 		end
 	end)
+end
+
+-- Shows workspace `orgId` (a no-op for the one shown), with the key the window half handed over.
+local function switchTo(state: State, orgId: string)
+	local s = setupOf()
+	if s and s.orgId == orgId then
+		return
+	end
+	for _, w in workspaces() do
+		if w.orgId == orgId then
+			local key = state.keys[orgId]
+			if not key then
+				state.cx:toast("error", "No API key for " .. tostring(w.orgName), "Add the workspace again from this menu")
+				return
+			end
+			kvSet("linear-todo.setup", w)
+			connect(state, w.teamId, key)
+			return
+		end
+	end
 end
 
 -- Mutations -----------------------------------------------------------------
@@ -432,7 +492,7 @@ local function openDraft(state: State, stateId: string, template: boolean)
 	local s = setupOf()
 	local key, teamId = state.key, state.teamId
 	if not s or not key or not teamId or s.teamId ~= teamId then
-		state.cx:toast("error", "Linear is not set up", "Run Linear: setup")
+		state.cx:toast("error", "No Linear workspace yet", "Run Linear: add workspace")
 		return
 	end
 	if not Model.stateById(state.states, stateId) then
@@ -693,6 +753,24 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		saveProps(state, dt, before)
 		return
 	end
+	if name ~= "ws-pop" then
+		state.switcher = false
+	end
+	if name == "ws-pop" then
+		state.switcher = not state.switcher
+		return
+	elseif name == "ws-add" then
+		-- Storing a key needs the keychain, which only the window half reaches. Blocks can't call
+		-- it, so the title says Model.ADD_TITLE and the window answers with its key prompt.
+		state.adding = true
+		return
+	elseif name == "ws-added" then
+		state.adding = false
+		return
+	elseif name == "ws" then
+		switchTo(state, value)
+		return
+	end
 	if state.lift and name ~= "sel" and name ~= "lift" and name ~= "drop" then
 		state.lift, state.dropState = nil, nil
 	end
@@ -803,6 +881,20 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		end
 		saveProps(state, dt, before)
 		return r ~= false
+	end
+	if state.switcher then
+		local n = tonumber(k.name)
+		if k.name == "escape" then
+			state.switcher = false
+			return true
+		elseif n and n >= 1 and n <= 9 and not (k.ctrl or k.meta or k.alt) then
+			local w = workspaces()[n]
+			state.switcher = false
+			if w then
+				switchTo(state, w.orgId)
+			end
+			return true
+		end
 	end
 	local e = state.edit
 	if e then
@@ -953,6 +1045,16 @@ end
 
 local function flag(on: boolean): string?
 	return if on then "true" else nil
+end
+
+-- A workspace's initials on a colour of its own, as Linear's workspace menu draws it.
+local function wsAvatar(w: any, key: string): Node
+	local sum = 0
+	for i = 1, #w.orgId do
+		sum += string.byte(w.orgId, i)
+	end
+	local colours = { "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink" }
+	return el("span", "ws-avatar", key, { class = "lt-ws-avatar", attrs = { ["data-c"] = colours[sum % #colours + 1] }, text = Model.initials(w.orgName) })
 end
 
 -- Grip, rename and cancel: the per-issue controls of a card or row.
@@ -1142,7 +1244,16 @@ local function header(state: State, count: number): { Node }
 	end
 	local out: { Node } = {
 		el("div", "head", "head", { class = "lt-head" }, {
-			el("span", "ws", "ws", { class = "lt-ws", text = if s and s.teamKey then s.teamKey else "Linear" }),
+			el("button", "ws", "ws", {
+				class = "lt-ws lt-ws-button",
+				title = "Switch workspace",
+				attrs = { ["data-open"] = flag(state.switcher) },
+				actions = { click = "ws-pop" },
+			}, if s and s.orgName then {
+				wsAvatar(s, "avatar"),
+				el("span", "ws-name", "name", { class = "lt-ws-name", text = s.orgName }),
+				el("span", "ws-team", "team", { class = "lt-ws-team", text = s.teamKey .. " ▾" }),
+			} else { el("span", "ws-name", "name", { class = "lt-ws-name", text = if s then s.teamKey .. " ▾" else "Linear ▾" }) }),
 			el("div", "tabs", "tabs", { class = "lt-tabs" }, { tab(state, "kanban", "Kanban"), tab(state, "list", "List") }),
 			el("button", "mine", "mine", {
 				class = "lt-tab lt-mine",
@@ -1161,6 +1272,36 @@ local function header(state: State, count: number): { Node }
 		table.insert(out, el("div", "error", "error", { class = "lt-error", tone = "error", text = state.error }))
 	end
 	return out
+end
+
+-- The workspace dropdown under the header's workspace button: each workspace (1–9 pick
+-- one while it is open), then "Add workspace…".
+local function switcher(state: State): Node
+	local s = setupOf()
+	local rows: { Node } = { el("div", "ws-section", "title", { class = "lt-ws-section", text = "Switch workspace" }) }
+	for i, w in workspaces() do
+		local kids: { Node } = {
+			wsAvatar(w, "avatar"),
+			el("span", "pop-label", "label", { class = "lt-pop-label", text = w.orgName }),
+			el("span", "pop-hint", "team", { class = "lt-pop-hint", text = w.teamKey }),
+		}
+		if s and s.orgId == w.orgId then
+			table.insert(kids, el("span", "pop-on", "on", { class = "lt-pop-on", text = "✓" }))
+		end
+		if i <= 9 then
+			table.insert(kids, el("span", "pop-hint", "n", { class = "lt-pop-hint lt-ws-n", text = tostring(i) }))
+		end
+		table.insert(rows, el("button", "pop-row", "w" .. i, { class = "lt-pop-row", actions = { click = "ws=" .. w.orgId } }, kids))
+	end
+	table.insert(rows, el("div", "ws-section", "more", { class = "lt-ws-section", text = "Workspaces" }))
+	table.insert(rows, el("button", "pop-row", "add", { class = "lt-pop-row", actions = { click = "ws-add" } }, {
+		el("span", "pop-label", "label", { class = "lt-pop-label", text = "Add workspace…" }),
+	}))
+	return {
+		k = "overlay",
+		p = { key = "switcher", role = ROLE .. "switcher", aria = "Linear workspaces", anchor = { node = "main.head.ws", side = "below" }, size = "sm" },
+		c = { el("div", "pop-list", "list", { class = "lt-pop-list" }, rows) },
+	} :: any
 end
 
 local function dock(state: State): Node?
@@ -1214,7 +1355,7 @@ local function view(state: State): BlockView
 	local cols = columnsOf(state)
 	local kids = header(state, #Model.list(cols))
 	if not state.teamId then
-		return empty(kids, "Linear is not set up. Run Linear: setup and paste a personal API key.")
+		return empty(kids, "No Linear workspace yet. Run Linear: add workspace and paste a personal API key.")
 	elseif not state.key then
 		return empty(kids, "Connecting…")
 	elseif #cols == 0 then
@@ -1232,7 +1373,10 @@ local function view(state: State): BlockView
 		table.insert(kids, el("div", "board", "board", { class = "lt-board" }, nodes))
 	end
 	local d = state.draft
-	return { main = region("main", kids), dock = dock(state), layer = if d then region("layer", Create.view(d, ctxOf(state))) else nil }
+	local layer = if d then region("layer", Create.view(d, ctxOf(state)))
+		elseif state.switcher then region("layer", { switcher(state) })
+		else nil
+	return { main = region("main", kids), dock = dock(state), layer = layer }
 end
 
 -- Block ---------------------------------------------------------------------
@@ -1252,6 +1396,9 @@ tern.block.define("board", {
 			states = {},
 			overlay = {},
 			creating = {},
+			keys = {},
+			switcher = false,
+			adding = false,
 			loading = false,
 			failures = 0,
 			view = if kvGet("linear-todo.view") == "list" then "list" else "kanban",
@@ -1270,8 +1417,11 @@ tern.block.define("board", {
 	end,
 
 	title = function(state: State): string?
+		if state.adding then
+			return Model.ADD_TITLE
+		end
 		local s = setupOf()
-		return "Linear · " .. (if s and s.teamKey then s.teamKey else "not set up")
+		return "Linear · " .. (if s and s.teamKey then (s.orgName or "") .. " · " .. s.teamKey else "not set up")
 	end,
 
 	view = function(state: State, _cx: BlockCx): BlockView
@@ -1331,23 +1481,10 @@ tern.block.define("board", {
 				state.poll += 1
 				return
 			end
-			local newKey = if type(ev.key) == "string" and ev.key ~= "" then ev.key else nil
-			if value == state.teamId and newKey == state.key then
-				return
+			if type(ev.keys) == "table" then
+				state.keys = ev.keys
 			end
-			if value ~= state.teamId then
-				state.teamId = value
-				state.issues, state.states = cached(value)
-				resetBoard(state)
-				state.gen += 1
-			end
-			-- Same team, new key: writes in flight still belong to this board, so only the poll restarts.
-			state.key = newKey
-			state.poll += 1
-			local p = state.poll
-			fetch(state, false, function()
-				schedule(state, p)
-			end)
+			connect(state, value, if type(ev.key) == "string" and ev.key ~= "" then ev.key else nil)
 			return
 		end
 		act(state, ev.act, value, cx)

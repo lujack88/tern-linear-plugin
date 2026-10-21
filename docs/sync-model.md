@@ -1,6 +1,6 @@
 # Sync model
 
-How version 0.5.0 keeps the Board in step with Linear.
+How version 0.6.0 keeps the Board in step with Linear.
 
 ## Host and window halves
 
@@ -8,20 +8,27 @@ The plugin is split because of one platform rule: **secrets are window-only**
 (`tern.secrets` does not exist in the host VM). The board block itself runs in
 the host half, so it cannot read the API key.
 
-- **Window half** (`window.luau`) owns the commands, the keychain and the Setup.
+- **Window half** (`window.luau`) owns the commands, the keychain and the workspaces.
 - **Host half** (`host.luau`) owns the block: it polls Linear, holds the board
   state, and performs the edits.
 
-The window injects the key into the block's memory with
-`cx.session:event(pane, { ev = "action", act = "key", value = teamId, key = key })`.
-Nothing is written to disk, and the block discards the key when the pane closes.
-A window that finds no board pane reads no secret at all.
+The window injects every workspace's key into the block's memory with
+`cx.session:event(pane, { ev = "action", act = "key", value = teamId, key = key, keys = { [orgId] = key } })`:
+`value` and `key` are the active workspace's, `keys` all of them, so the board's
+own workspace switcher needs no round trip to the window. Nothing is written to
+disk, and the block discards the keys when the pane closes. A window that finds no
+board pane reads no secret at all.
+
+The block has no way to call the window half, yet adding a workspace needs the
+window's keychain and prompts. So the board's **Add workspace…** sets the pane
+title to `Model.ADD_TITLE`; the window half watches board panes' `title` events,
+answers with `{act = "ws-added"}` (the title reverts) and runs its key prompt.
 
 The window injects again on `window_start`, 300 ms after load (a reload does not
-fire `window_start`), after setup, and up to 3 s after opening a board, to cover
-the block's init race. The block ignores a duplicate key for the same team. A new
-key for the same team only restarts polling; writes already in flight finish
-normally. A different team clears the board.
+fire `window_start`), after adding or switching a workspace, and up to 3 s after
+opening a board, to cover the block's init race. The block ignores a duplicate key
+for the same team. A new key for the same team only restarts polling; writes
+already in flight finish normally. A different team clears the board.
 
 ## Stored state
 
@@ -30,21 +37,22 @@ halves.
 
 | Key | Contents |
 | --- | --- |
-| `linear-todo.setup` | `{teamId, teamKey, orgUrlKey, viewerId}`. |
-| `linear-todo.cache` | `{teamId, states, issues}` from the last sync, so a reopened board paints before the network answers. Ignored when its `teamId` is not the Setup's; cleared when setup picks another team. |
-| `linear-todo.status` | `{at, ok, error?, issues}` for `Linear: status`. |
+| `linear-todo.workspaces` | Array of `{orgId, orgName, orgUrlKey, viewerId, teamId, teamKey}`, one per Linear workspace. |
+| `linear-todo.setup` | The active workspace (same shape); the host half reads only this. |
+| `linear-todo.cache.<teamId>` | `{teamId, states, issues}` from the team's last sync, so a reopened or switched-to board paints before the network answers. |
+| `linear-todo.status` | `{at, ok, error?, issues}` of the last sync, for `Linear: status`. |
 | `linear-todo.view` | `"kanban"` or `"list"`. |
 | `linear-todo.mine` | `true` while the Mine toggle is on. |
 | `linear-todo.interval` | Poll interval in seconds; 60 when unset or below 30. |
 | `linear-todo.selftest` | `"ok"` or the last self-test failure. |
 
-The API key is in the OS keychain as `plugin.linear-todo.key`, never in
+Each key is in the OS keychain as `plugin.linear-todo.key.<orgId>`, never in
 `kv.json`.
 
-0.2 stored `linear-todo.workspaces`, `linear-todo.active`,
-`linear-todo.cache.<orgId>`, `linear-todo.status.<orgId>` and keychain entries
-`plugin.linear-todo.key.<orgId>`. The window half migrates them once (see the
-README) and deletes them.
+0.3–0.5 kept one key as `plugin.linear-todo.key` and a `setup` without its
+organization. On the next window start the window half asks Linear whose key it
+is, stores it as `key.<orgId>`, writes the one-entry workspace list and the full
+`setup`, and only then deletes the old key and `linear-todo.cache`.
 
 ## Fetching
 

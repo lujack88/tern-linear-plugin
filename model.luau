@@ -206,6 +206,10 @@ function M.estimate(e: number?): string?
 	return string.format("%.1f", e)
 end
 
+-- The board's pane title while it asks the window half to add a workspace: blocks cannot reach
+-- the keychain or open prompts, so the window watches board titles for this one.
+M.ADD_TITLE = "Linear · adding a workspace…"
+
 -- Create modal ----------------------------------------------------------------
 
 M.PRIORITIES = { { value = 0, label = "No priority" }, { value = 1, label = "Urgent" }, { value = 2, label = "High" }, { value = 3, label = "Medium" }, { value = 4, label = "Low" } }

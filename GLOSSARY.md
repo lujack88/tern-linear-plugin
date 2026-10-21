@@ -5,7 +5,7 @@ A Tern pane that shows one Linear team's work and edits it in place.
 ## Language
 
 **Issue**:
-A Linear issue of the Setup's team: the unit of work shown on the Board.
+A Linear issue of the active Workspace's team: the unit of work shown on the Board.
 _Avoid_: Task, card, ticket, todo
 
 **State**:
@@ -13,13 +13,13 @@ One of the team's Linear workflow states (Backlog, Todo, In Progress, Done, …)
 _Avoid_: Lane, status, column (for the State itself)
 
 **Board**:
-The pane showing the Setup's team: its visible States and their Issues.
-_Avoid_: Workspace, taskboard (for the pane)
+The pane showing the active Workspace's team: its visible States and their Issues.
+_Avoid_: Taskboard (for the pane)
 
 **View**:
 How the Board is drawn: Kanban (a column per State) or List (a group of rows per State).
 _Avoid_: Mode, layout, tab
 
-**Setup**:
-The one Linear API key and team the Board shows.
-_Avoid_: Workspace, account, connection
+**Workspace**:
+A Linear workspace (organization) added to the plugin, with its API key and the one team its Board shows; one Workspace is active at a time.
+_Avoid_: Setup, account, connection, organization (in the UI)

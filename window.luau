@@ -1,18 +1,20 @@
 --!strict
--- linear-todo window half: commands, keychain and the Setup (API key plus team). Injects the API
--- key into board blocks (secrets are window-only), which then poll and edit Linear.
+-- linear-todo window half: commands, keychain and the workspaces (one Linear API key plus a
+-- team each). Injects the keys into board blocks (secrets are window-only), which then poll
+-- and edit Linear.
 
 local Linear = require("./linear")
+local Model = require("./model")
 local Selftest = require("./selftest")
 
 local P = "linear-todo."
 local GROUP = "Linear"
 local ICON = "check"
 local BLOCK = "linear-todo.board"
-local SECRET = "key"
-local NO_SETUP = "Linear is not set up"
+local NO_SETUP = "No Linear workspace yet"
 
-type Setup = { teamId: string, teamKey: string, orgUrlKey: string, viewerId: string }
+-- One Linear workspace (organization), the team its board shows, and whose key it holds.
+type Workspace = { orgId: string, orgName: string, orgUrlKey: string, viewerId: string, teamId: string, teamKey: string }
 
 -- Helpers ---------------------------------------------------------------
 
@@ -38,9 +40,36 @@ local function trim(s: string): string
 	return (string.gsub(s, "^%s+", ""):gsub("%s+$", ""))
 end
 
-local function setup(): Setup?
+-- Keychain account `plugin.linear-todo.key.<orgId>`: each workspace has its own key.
+local function secretName(orgId: string): string
+	return "key." .. orgId
+end
+
+local function valid(w: any): boolean
+	return type(w) == "table" and type(w.orgId) == "string" and type(w.teamId) == "string"
+end
+
+local function workspaces(): { Workspace }
+	local out: { Workspace } = {}
+	local list = kvGet(P .. "workspaces")
+	if type(list) == "table" then
+		for _, w in list do
+			if valid(w) then
+				table.insert(out, w)
+			end
+		end
+	end
+	return out
+end
+
+-- The workspace the board shows (kv `setup`, which the host half reads).
+local function active(): Workspace?
 	local s = kvGet(P .. "setup")
-	return if type(s) == "table" and type(s.teamId) == "string" then s else nil
+	return if valid(s) then s else nil
+end
+
+local function label(w: Workspace): string
+	return w.orgName .. " · " .. w.teamKey
 end
 
 local function interval(): number
@@ -80,10 +109,10 @@ local function send(cx: WindowCx, panes: { number }, ev: { [string]: any })
 	end
 end
 
--- Hands the key to every board block. The key never leaves this VM except as the block's
--- in-memory event payload.
+-- Hands every workspace's key to every board block, so its switcher needs no round trip. The
+-- keys never leave this VM except as the block's in-memory event payload.
 local function inject(cx: WindowCx)
-	local s = setup()
+	local s = active()
 	local panes = boardPanes(cx)
 	if not s then
 		send(cx, panes, { ev = "action", act = "key", value = "" })
@@ -92,16 +121,39 @@ local function inject(cx: WindowCx)
 	if #panes == 0 then
 		return
 	end
-	tern.secrets.get(SECRET):next(function(key, err, cx2)
-		if not cx2 then
+	local list = workspaces()
+	local keys: { [string]: string } = {}
+	local function step(i: number, cx2: WindowCx)
+		local w = list[i]
+		if not w then
+			local key = keys[s.orgId]
+			if not key then
+				cx2:toast("error", "Missing Linear API key for " .. s.orgName, "Run Linear: add workspace")
+				return
+			end
+			send(cx2, boardPanes(cx2), { ev = "action", act = "key", value = s.teamId, key = key, keys = keys })
 			return
 		end
-		if err or not key or key == "" then
-			cx2:toast("error", "Missing Linear API key", "Run Linear: setup")
-			return
-		end
-		send(cx2, boardPanes(cx2), { ev = "action", act = "key", value = s.teamId, key = key })
-	end)
+		tern.secrets.get(secretName(w.orgId)):next(function(key, err, cx3)
+			if not cx3 then
+				return
+			end
+			if not err and type(key) == "string" and key ~= "" then
+				keys[w.orgId] = key
+			end
+			step(i + 1, cx3)
+		end)
+	end
+	step(1, cx)
+end
+
+-- Makes `w` the board's workspace and hands the boards its key.
+local function activate(cx: WindowCx, w: Workspace)
+	if not kvSet(P .. "setup", w) then
+		cx:toast("error", "Could not switch the Linear workspace")
+		return
+	end
+	inject(cx)
 end
 
 -- Setup -------------------------------------------------------------------
@@ -140,26 +192,11 @@ local function query(key: string, q: string, title: string, fn: (data: any, cx: 
 	end)
 end
 
--- Deletes 0.2's kv keys and keychain entries once the Setup holds the carried-over key.
-local function dropOld(old: { any })
-	for _, w in old do
-		if type(w) == "table" and type(w.id) == "string" then
-			kvSet(P .. "cache." .. w.id, nil)
-			kvSet(P .. "status." .. w.id, nil)
-			tern.secrets.set("key." .. w.id, nil):next(function(_, err, cx)
-				if err and cx then
-					cx:toast("error", "Could not remove an old Linear key from the keychain", err)
-				end
-			end)
-		end
-	end
-	kvSet(P .. "workspaces", nil)
-	kvSet(P .. "active", nil)
-end
-
--- Stores the key and the Setup; a different team drops the old team's cache and status.
+-- Stores the key and the workspace (replacing an earlier one of the same organization), then
+-- makes it the board's.
 local function save(cx: WindowCx, key: string, viewer: any, team: any)
-	tern.secrets.set(SECRET, key):next(function(_, err, cx)
+	local org = viewer.organization
+	tern.secrets.set(secretName(org.id), key):next(function(_, err, cx)
 		if not cx then
 			return
 		end
@@ -167,23 +204,23 @@ local function save(cx: WindowCx, key: string, viewer: any, team: any)
 			cx:toast("error", "Could not update the keychain", err)
 			return
 		end
-		local prev = setup()
-		local s: Setup = { teamId = team.id, teamKey = team.key, orgUrlKey = viewer.organization.urlKey, viewerId = viewer.id }
-		if not kvSet(P .. "setup", s) then
-			cx:toast("error", "Could not save the Linear setup")
+		local w: Workspace = { orgId = org.id, orgName = org.name, orgUrlKey = org.urlKey, viewerId = viewer.id, teamId = team.id, teamKey = team.key }
+		local list = workspaces()
+		local placed = false
+		for i, other in list do
+			if other.orgId == w.orgId then
+				list[i], placed = w, true
+			end
+		end
+		if not placed then
+			table.insert(list, w)
+		end
+		if not kvSet(P .. "workspaces", tern.json.array(list)) then
+			cx:toast("error", "Could not save the Linear workspace")
 			return
 		end
-		if not prev or prev.teamId ~= s.teamId then
-			kvSet(P .. "cache", nil)
-			kvSet(P .. "status", nil)
-		end
-		cx:toast("success", "Linear: " .. team.key .. " · " .. team.name)
-		-- Setup supersedes 0.2's workspaces, whether it came from the migration or the command.
-		local old = kvGet(P .. "workspaces")
-		if type(old) == "table" then
-			dropOld(old)
-		end
-		inject(cx)
+		cx:toast("success", "Linear: " .. org.name .. " · " .. team.key .. " " .. team.name)
+		activate(cx, w)
 	end)
 end
 
@@ -221,7 +258,8 @@ local function askTeam(cx: WindowCx, key: string, viewer: any, prefill: string?)
 	end)
 end
 
-local function runSetup(cx: WindowCx)
+-- Adds a workspace from a pasted key; a key of a known workspace replaces its key and team.
+local function addWorkspace(cx: WindowCx)
 	ask(cx:prompt({ placeholder = "Linear personal API key (lin_api_…)", icon = "key" }), function(input, cx)
 		if type(input) ~= "string" then
 			return
@@ -231,52 +269,93 @@ local function runSetup(cx: WindowCx)
 			return
 		end
 		query(key, Linear.VIEWER, "Key rejected", function(data, cx)
-			local cur = setup()
-			askTeam(cx, key, data.viewer, cur and cur.teamKey)
+			local known: string? = nil
+			for _, w in workspaces() do
+				if w.orgId == data.viewer.organization.id then
+					known = w.teamKey
+				end
+			end
+			askTeam(cx, key, data.viewer, known)
 		end)
 	end)
 end
 
--- Migration from 0.2 (several workspaces) -----------------------------------
-
-
-local migrating = false
-
--- Carries the active workspace's key over and asks once (per window start) for the team key.
-local function migrate(cx: WindowCx)
-	local old = kvGet(P .. "workspaces")
-	if migrating or type(old) ~= "table" or setup() then
+local function switchWorkspace(cx: WindowCx)
+	local list = workspaces()
+	if #list == 0 then
+		cx:toast("info", NO_SETUP, "Run Linear: add workspace")
 		return
 	end
-	migrating = true
-	local activeId = kvGet(P .. "active")
-	local active: any = old[1]
-	for _, w in old do
-		if type(w) == "table" and w.id == activeId then
-			active = w
+	local cur = active()
+	local items: { PickItem } = {}
+	for _, w in list do
+		table.insert(items, { label = label(w), detail = w.orgUrlKey, current = cur ~= nil and cur.orgId == w.orgId, ws = w })
+	end
+	ask(cx:pick({ items = items, placeholder = "Linear workspace", icon = ICON }), function(item, cx)
+		if item then
+			activate(cx, item.ws)
 		end
-	end
-	if type(active) ~= "table" or type(active.id) ~= "string" then
-		dropOld(old)
+	end)
+end
+
+-- Upgrade from 0.5 (one key `key`, a Setup without its organization) -------------
+
+local upgrading = false
+
+-- Files the single Setup under its organization: a per-workspace keychain entry and the
+-- workspace list. Nothing is deleted before the new entries are stored.
+local function upgrade(cx: WindowCx)
+	local s = kvGet(P .. "setup")
+	if upgrading or type(s) ~= "table" or type(s.teamId) ~= "string" or valid(s) then
 		return
 	end
-	tern.secrets.get("key." .. active.id):next(function(key, err, cx)
+	upgrading = true
+	tern.secrets.get("key"):next(function(key, err, cx)
 		if not cx then
 			return
 		end
-		if err or not key or key == "" then
-			cx:toast("info", "Linear Taskboard: the old key is gone", "Run Linear: setup")
+		if err or type(key) ~= "string" or key == "" then
+			cx:toast("info", "Linear Taskboard: the stored key is gone", "Run Linear: add workspace")
 			return
 		end
 		query(key, Linear.VIEWER, "Linear Taskboard: the stored key was rejected", function(data, cx)
-			cx:toast("info", "Linear Taskboard now shows one team's board", "Confirm the team key to finish the upgrade")
-			askTeam(cx, key, data.viewer, active.createTeamKey)
+			local org = data.viewer.organization
+			tern.secrets.set(secretName(org.id), key):next(function(_, serr, cx)
+				if not cx or serr then
+					if cx then
+						cx:toast("error", "Could not update the keychain", serr)
+					end
+					return
+				end
+				local w: Workspace = { orgId = org.id, orgName = org.name, orgUrlKey = org.urlKey, viewerId = data.viewer.id, teamId = s.teamId, teamKey = s.teamKey }
+				if not kvSet(P .. "workspaces", tern.json.array({ w })) or not kvSet(P .. "setup", w) then
+					cx:toast("error", "Could not save the Linear workspace")
+					return
+				end
+				kvSet(P .. "cache", nil)
+				tern.secrets.set("key", nil)
+				inject(cx)
+			end)
 		end)
 	end)
 end
 
+-- The board's "Add workspace…": it sets its title to Model.ADD_TITLE, the window takes that as
+-- the request, acknowledges it (the title reverts) and runs the key prompt.
+tern.on("title", function(ev: TitleEvent, cx: WindowCx)
+	if ev.title ~= Model.ADD_TITLE then
+		return
+	end
+	local panes = boardPanes(cx)
+	if not table.find(panes, ev.pane) then
+		return
+	end
+	send(cx, panes, { ev = "action", act = "ws-added" })
+	addWorkspace(cx)
+end)
+
 local function start(cx: WindowCx)
-	migrate(cx)
+	upgrade(cx)
 	inject(cx)
 end
 
@@ -343,17 +422,17 @@ local function syncNow(cx: WindowCx)
 end
 
 local function status(cx: WindowCx)
-	local s = setup()
+	local s = active()
 	if not s then
-		cx:toast("info", NO_SETUP, "Run Linear: setup")
+		cx:toast("info", NO_SETUP, "Run Linear: add workspace")
 		return
 	end
 	local st = kvGet(P .. "status")
 	if type(st) ~= "table" or type(st.at) ~= "number" then
-		cx:toast("info", "Linear · " .. s.teamKey .. " · never synced")
+		cx:toast("info", "Linear · " .. label(s) .. " · never synced")
 		return
 	end
-	local title = "Linear · " .. s.teamKey .. " · " .. (if st.ok then "OK" else "FAILED") .. " " .. agoText(nowSec() - st.at)
+	local title = "Linear · " .. label(s) .. " · " .. (if st.ok then "OK" else "FAILED") .. " " .. agoText(nowSec() - st.at)
 	local sub = (st.issues or 0) .. " issues" .. (if st.error then " · " .. st.error else "")
 	cx:toast(if st.ok then "success" else "error", title, sub)
 end
@@ -370,7 +449,8 @@ end
 
 tern.command({ id = "open", title = "Linear: open board", group = GROUP, icon = ICON, run = openBoard })
 tern.command({ id = "now", title = "Linear: sync now", group = GROUP, icon = ICON, run = syncNow })
-tern.command({ id = "setup", title = "Linear: setup", group = GROUP, icon = ICON, run = runSetup })
+tern.command({ id = "add", title = "Linear: add workspace", group = GROUP, icon = ICON, run = addWorkspace })
+tern.command({ id = "switch", title = "Linear: switch workspace", group = GROUP, icon = ICON, run = switchWorkspace })
 tern.command({ id = "interval", title = "Linear: poll interval", group = GROUP, icon = ICON, run = changeInterval })
 tern.command({ id = "status", title = "Linear: status", group = GROUP, icon = ICON, run = status })
 tern.command({ id = "selftest", title = "Linear: self-test", group = GROUP, icon = ICON, run = selftest })
