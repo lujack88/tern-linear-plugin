@@ -38,6 +38,10 @@ export type Draft = {
 	pop: Pop?,
 	more: boolean,
 	error: string?,
+	-- A rewrite is running; the description before the last rewrite, and the text it produced.
+	rewriting: boolean,
+	beforeRewrite: string?,
+	rewritten: string?,
 }
 -- What the modal needs from the board: the team's States, the fetched choices, the Setup.
 export type Ctx = { states: { any }, meta: any?, teamKey: string, teamId: string, viewerId: string? }
@@ -65,6 +69,7 @@ function M.new(stateId: string, assigneeId: string?): Draft
 		desc = Field.new("", true, 20000),
 		focus = "title",
 		more = false,
+		rewriting = false,
 	}
 end
 
@@ -350,6 +355,7 @@ function M.again(d: Draft, cx: BlockCx)
 	Field.reset(d.title, "")
 	Field.reset(d.desc, "")
 	d.templateId, d.templateName, d.descTemplate, d.error = nil, nil, nil, nil
+	d.rewriting, d.beforeRewrite, d.rewritten = false, nil, nil
 	M.focus(d, "title", cx)
 end
 
@@ -617,6 +623,15 @@ function M.view(d: Draft, c: Ctx): { Node }
 		table.insert(body, el("div", "modal-error", "error", { class = "lt-modal-error", tone = "error", text = d.error }))
 	end
 	table.insert(body, el("div", "modal-foot", "foot", { class = "lt-modal-foot" }, {
+		if d.rewriting then el("span", "rewrite", "rewrite", { class = "lt-rewrite", text = "Rewriting…" })
+		elseif d.beforeRewrite ~= nil and d.desc.text == d.rewritten then
+			el("button", "rewrite", "rewrite", { class = "lt-more lt-rewrite", text = "Undo rewrite", actions = { click = "cm-unrewrite" } })
+		else el("button", "rewrite", "rewrite", {
+			class = "lt-more lt-rewrite",
+			text = "✨ Rewrite",
+			title = "Rewrite the description with your default model",
+			actions = { click = "cm-rewrite" },
+		}),
 		el("span", "spacer", "sp", { class = "lt-spacer" }),
 		el("button", "more", "more", {
 			class = "lt-more",
@@ -637,8 +652,8 @@ function M.view(d: Draft, c: Ctx): { Node }
 	return out
 end
 
--- Clicks inside the modal: "submit", "close", or whether it was the modal's.
-function M.act(d: Draft, name: string, value: string, c: Ctx, cx: BlockCx): ("submit" | "close" | boolean)
+-- Clicks inside the modal: "submit", "close", "rewrite", or whether it was the modal's.
+function M.act(d: Draft, name: string, value: string, c: Ctx, cx: BlockCx): ("submit" | "close" | "rewrite" | boolean)
 	if name == "cm-pop" then
 		if d.pop and d.pop.kind == value then
 			M.closePop(d, cx)
@@ -651,6 +666,11 @@ function M.act(d: Draft, name: string, value: string, c: Ctx, cx: BlockCx): ("su
 		d.more = not d.more
 	elseif name == "cm-submit" then
 		return "submit"
+	elseif name == "cm-rewrite" then
+		return "rewrite"
+	elseif name == "cm-unrewrite" then
+		Field.reset(d.desc, d.beforeRewrite or "")
+		d.beforeRewrite, d.rewritten = nil, nil
 	elseif name == "cm-unpop" then
 		M.closePop(d, cx)
 	elseif name == "cm-close" then

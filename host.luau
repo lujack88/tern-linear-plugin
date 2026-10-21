@@ -577,6 +577,51 @@ local function submitDraft(state: State)
 	end)
 end
 
+-- Rewrites the draft's description with omp's default model; never logs the prompt or reply.
+local function rewriteDraft(state: State, d: Create.Draft)
+	if d.rewriting then
+		return
+	end
+	if not string.find(d.title.text, "%S") and not string.find(d.desc.text, "%S") then
+		d.error = "Write a title or description first"
+		return
+	end
+	local sent = d.desc.text
+	d.rewriting, d.error = true, nil
+	state.cx:render()
+	local argv = {
+		"omp", "-p", "--no-session", "--no-tools", "--no-skills", "--no-rules", "--no-extensions",
+		Model.rewritePrompt(d.title.text, sent, (setupOf() or {}).teamKey or ""),
+	}
+	local ok, err = pcall(tern.process.run, argv, { timeout_ms = 120000 }, function(res: any)
+		d.rewriting = false
+		-- A late reply for a draft that was created or cleared meanwhile is dropped.
+		if not alive(state.cx.pane) or (d ~= state.draft and d ~= state.kept) then
+			return
+		end
+		local text = Model.cleanRewrite(res.stdout or "")
+		if res.timed_out then
+			d.error = "Rewrite timed out"
+		elseif res.status ~= 0 then
+			local line = string.match(string.match(res.stderr or "", "^%s*(.-)%s*$") or "", "^[^\r\n]+")
+			d.error = "Rewrite failed: " .. (line or ("omp exited " .. tostring(res.status)))
+		elseif not text then
+			d.error = "Rewrite returned nothing"
+		elseif d.desc.text ~= sent then
+			d.error = "Description changed while rewriting; try again"
+		else
+			d.beforeRewrite, d.rewritten = sent, text
+			Field.reset(d.desc, text)
+		end
+		state.cx:render()
+	end)
+	if not ok then
+		d.rewriting = false
+		d.error = "Could not start omp: " .. tostring(err)
+		state.cx:render()
+	end
+end
+
 -- The undo step, while it is still offered.
 local function fresh(state: State): Undo?
 	local u = state.undo
@@ -767,6 +812,8 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			submitDraft(state)
 		elseif r == "close" then
 			closeDraft(state, true)
+		elseif r == "rewrite" then
+			rewriteDraft(state, d)
 		end
 		return
 	end

@@ -224,6 +224,16 @@ local cases: { { name: string, fn: () -> () } } = {
 		end,
 	},
 	{
+		name = "rewrite text",
+		fn = function()
+			check(Model.cleanRewrite("  ## A\n\nb  \n") == "## A\n\nb", "trim")
+			check(Model.cleanRewrite("```markdown\n## A\n```") == "## A", "fence")
+			check(Model.cleanRewrite("   \n") == nil, "empty")
+			local p = Model.rewritePrompt("T", "", "FIX")
+			check(string.find(p, "Current description:\n(empty)", 1, true) ~= nil and string.find(p, "team FIX", 1, true) ~= nil, "prompt")
+		end,
+	},
+	{
 		name = "labelClass",
 		fn = function()
 			check(Model.labelClass("#eb5757") == "red", "red")

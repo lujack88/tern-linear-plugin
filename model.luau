@@ -389,4 +389,22 @@ function M.isDate(s: string): boolean
 	return string.match(s, "^%d%d%d%d%-%d%d%-%d%d$") ~= nil
 end
 
+function M.rewritePrompt(title: string, description: string, teamKey: string): string
+	local desc = if string.match(description, "%S") then description else "(empty)"
+	return "Rewrite the description of a Linear issue for team " .. teamKey .. ". Keep every fact, link, name and code snippet; invent nothing.\n"
+		.. "Make it clear and well structured Markdown: a one-line summary, then short sections (## headings) or bullet lists where they help, and an acceptance checklist (- [ ]) when the text implies one.\n"
+		.. "Reply with the new description only: no preamble, no title line, no closing remarks, not wrapped in a code fence.\n\n"
+		.. "Title: " .. title .. "\n\nCurrent description:\n" .. desc
+end
+
+-- The model's reply as a description: trimmed, one wrapping code fence removed; nil when empty.
+function M.cleanRewrite(out: string): string?
+	local s = string.match(out, "^%s*(.-)%s*$") or ""
+	local inner = string.match(s, "^```%w*\n(.-)\n```$")
+	if inner and not string.find(inner, "\n```", 1, true) then
+		s = string.match(inner, "^%s*(.-)%s*$") or ""
+	end
+	return if s == "" then nil else s
+end
+
 return M

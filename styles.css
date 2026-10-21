@@ -704,6 +704,16 @@
 		color: var(--sf-accent);
 	}
 
+	& .lt-rewrite {
+		color: var(--lt-muted);
+		font-size: 12px;
+	}
+
+	/* Not a toggle: no ○/● mark. */
+	& .lt-more.lt-rewrite::before {
+		content: none;
+	}
+
 	& .lt-submit {
 		height: 28px;
 		padding: 0 12px;
