@@ -217,8 +217,8 @@ identifier, title, URL, State, priority, assignee, labels and description
 If the work is very complicated or needs human QA, omp is told to stop as soon
 as it sees it, say why, wait for your go-ahead, and never merge it without your
 OK. The skills must be installed where omp finds them. Linear updates need a
-Linear tool (e.g. the Linear MCP) in that chat. The chat runs in the board
-pane's directory, else your home.
+Linear tool (e.g. the Linear MCP) in that chat. The chat opens in its own tab
+and runs in the board pane's directory, else your home.
 
 `✕` (or `Delete` pressed twice) cancels an issue: it moves to the team's
 Canceled State. The plugin never deletes issues.
