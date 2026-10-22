@@ -199,10 +199,11 @@ untouched keeps the template's own formatting.
 | Start or send to a session | click a row's **▾** (the right part of its **▷ Start** split button) or a card's **▷**: **▷ New chat**, or **Send to a session ▸** (the **Send to chat ▸** list) |
 
 Start opens a new omp chat in plan mode. Its first message is the issue:
-identifier, title, URL, State, priority, assignee, labels and description. It
-tells omp to grill you about the approach with the `grilling` skill, then write
-the plan, and to implement nothing until you approve it. The chat runs in the
-board pane's directory, else your home.
+identifier, title, URL, State, priority, assignee, labels and description
+(fields the issue leaves unset are left out). It ends by telling omp to grill
+you about the approach with the `grilling` skill, then write the plan, and to
+implement nothing until you approve it. The chat runs in the board pane's
+directory, else your home.
 
 `✕` (or `Delete` pressed twice) cancels an issue: it moves to the team's
 Canceled State. The plugin never deletes issues.

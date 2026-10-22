@@ -283,7 +283,12 @@ local cases: { { name: string, fn: () -> () } } = {
 			end
 			check(string.find(Model.startPrompt(issue(5, "todo"), "T", nil, " "), "(no description)", 1, true) ~= nil, "empty")
 			local bare = Model.startPrompt(issue(5, "todo"), "T", nil, nil)
-			check(string.find(bare, "could not be loaded", 1, true) ~= nil and string.find(bare, "No priority", 1, true) ~= nil, "unloaded")
+			check(string.find(bare, "could not be loaded", 1, true) ~= nil, "unloaded")
+			for _, unset in { "Priority", "Assignee", "Labels", "State", "Identifier", "Title:" } do
+				check(string.find(bare, unset, 1, true) == nil, "no " .. unset)
+			end
+			local _, grills = string.gsub(p, "skill://grilling", "")
+			check(grills == 1, "grilling once")
 		end,
 	},
 	{
@@ -309,7 +314,7 @@ local cases: { { name: string, fn: () -> () } } = {
 		fn = function()
 			local a = issue(4, "todo", { priority = 2, assignee = "Ada" })
 			local one = Model.contextPrompt({ { issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" } })
-			check(string.find(one, "^Here is Linear issue ENG%-4 for context: Fix it%.\n\n%- Identifier: ENG%-4\n") ~= nil, "lead")
+			check(string.find(one, "^Here is Linear issue ENG%-4 for context: Fix it%.\n\n%- URL: ") ~= nil, "lead")
 			check(string.find(one, "## Description\n\nSteps here$") ~= nil, "ends with the description")
 			local many = Model.contextPrompt({
 				{ issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" },
