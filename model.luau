@@ -520,19 +520,24 @@ function M.contextPrompt(entries: { StartEntry }): string
 	return "Here are " .. #entries .. " Linear issues for context: " .. idents .. ".\n\n" .. (string.gsub(parts, "\n+$", ""))
 end
 
--- A "Send to chat" target: the pane title, or the cwd's last folder when the title is only the
--- program's name; then the model (without its provider) and the agent's state.
-function M.chatLabel(title: string, cwd: string, command: string?, model: string?, agentState: string): string
+-- Agents with their own tile icon in Tern's tab list; others get the generic agent tile.
+local AGENT_TILES = { omp = true, claude = true, codex = true, hermes = true }
+
+-- A "Send to chat" target as Tern's tab list shows it: the tab's name, else the pane title (the
+-- program's name, e.g. "omp", when the chat is untitled), else the cwd's last folder; `meta` is that
+-- folder, the model (without its provider) and the agent's state; `icon` the program's tile icon.
+function M.chatRow(tabName: string?, title: string, cwd: string, command: string?, model: string?, agentState: string): { label: string, meta: string, icon: string }
 	local program = string.match(command or "", "^%s*\"?([^\"%s]+)") or ""
 	program = string.lower((string.gsub(string.match(program, "[^/\\]+$") or "", "%.exe$", "")))
 	local dir = (string.gsub(cwd, "[/\\]+$", ""))
-	local name = if title ~= "" and string.lower(title) ~= program then title else string.match(dir, "[^/\\]+$") or cwd
-	local parts = { name }
+	dir = string.match(dir, "[^/\\]+$") or cwd
+	local label = if tabName and tabName ~= "" then tabName elseif title ~= "" then title elseif program ~= "" then program else dir
+	local parts = if dir ~= "" then { dir } else {}
 	if model and model ~= "" then
 		table.insert(parts, string.match(model, "[^/]+$") or model)
 	end
 	table.insert(parts, (string.gsub(agentState, "_input$", "")))
-	return table.concat(parts, " · ")
+	return { label = label, meta = table.concat(parts, " · "), icon = if AGENT_TILES[program] then "tile-" .. program else "tile-agent" }
 end
 
 return M

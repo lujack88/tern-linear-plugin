@@ -94,9 +94,11 @@ selection: its title says how many, and it offers Status, Priority, Assignee,
 **▷ Start in omp**, **Send to chat ▸**, **Copy IDs** and **Cancel N issues**.
 Every change offers one undo.
 
-**Send to chat ▸** lists Carly and every open agent chat in Tern, as the pane
-title (or its folder when the title is only the program's name), model and
-state, for example `fixit-app · sonnet · idle`. Pick one to send it the issue
+**Send to chat ▸** lists Carly and every open agent chat in Tern, each with the
+icon and title Tern's tab list shows (the tab's name, else the pane title, e.g.
+`omp` for an untitled chat) over a muted line with its folder, model and state,
+for example `fixit-app · sonnet · idle`; a working or waiting chat gets an
+accent dot. Pick one to send it the issue
 (or the selection, up to 10): a message that starts "Here is Linear issue
 TES-4 for context:" with the same fields and description as Start, but no
 instruction. A busy chat queues it. The chat's pane is shown; Carly opens with

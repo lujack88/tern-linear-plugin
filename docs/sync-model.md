@@ -43,9 +43,11 @@ is unchanged.
 window-only:
 
 1. Opening the list sets the title to `Model.CHATS_TITLE`. The window answers with
-   `{act = "chats", chats = {{pane, label}, …}}` straight in the event (no kv):
-   Carly first (`pane = "carly"`), then every agent that has not exited, labelled
-   by `Model.chatLabel`. Until it answers the list reads "Loading chats…".
+   `{act = "chats", chats = {{pane, label, meta, icon, state}, …}}` straight in the
+   event (no kv): Carly first (`pane = "carly"`, icon `tile-carly`, no meta), then
+   every agent that has not exited, named by `Model.chatRow` as the tab list names
+   it (`label`) with its folder · model · state (`meta`) and Tern tile icon
+   (`tile-omp`, `tile-claude`, …). Until it answers the list reads "Loading chats…".
 2. Picking a chat loads the descriptions as Start does, writes
    `{pane, label, prompt = Model.contextPrompt(…)}` to kv `linear-todo.send` and
    sets the title to `Model.SEND_TITLE`. The window answers `{act = "sent"}`, takes

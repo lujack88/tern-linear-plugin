@@ -324,11 +324,15 @@ local cases: { { name: string, fn: () -> () } } = {
 		end,
 	},
 	{
-		name = "chatLabel",
+		name = "chatRow",
 		fn = function()
-			check(Model.chatLabel("omp", "C:\\Users\\me\\fixit-app", "omp --config x.yml", "anthropic/sonnet", "idle") == "fixit-app · sonnet · idle", "program title")
-			check(Model.chatLabel("Fix 25", "/home/me/app/", "\"C:\\bin\\omp.exe\"", nil, "waiting_input") == "Fix 25 · waiting", "own title")
-			check(Model.chatLabel("", "/srv/api/", nil, "", "working") == "api · working", "no title")
+			local r = Model.chatRow("", "omp", "C:\\Users\\me\\fixit-app", "omp --config x.yml", "anthropic/sonnet", "idle")
+			check(r.label == "omp" and r.meta == "fixit-app · sonnet · idle" and r.icon == "tile-omp", "untitled omp")
+			r = Model.chatRow("Fix 25", "omp", "/home/me/app/", "\"C:\\bin\\Claude.exe\"", nil, "waiting_input")
+			check(r.label == "Fix 25" and r.meta == "app · waiting" and r.icon == "tile-claude", "tab name")
+			r = Model.chatRow(nil, "Pull requests", "", "aider", "", "working")
+			check(r.label == "Pull requests" and r.meta == "working" and r.icon == "tile-agent", "pane title")
+			check(Model.chatRow(nil, "", "/srv/api/", nil, nil, "idle").label == "api", "no title")
 		end,
 	},
 	{

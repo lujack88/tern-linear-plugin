@@ -376,13 +376,18 @@ local function upgrade(cx: WindowCx)
 	end)
 end
 
--- "Send to chat" targets: Carly, then every open agent chat ({pane, label}), labelled by Model.chatLabel.
-local function chatList(cx: WindowCx): { { pane: any, label: string } }
-	local titles: { [number]: string } = {}
-	for _, p in cx.session:panes() do
-		titles[p.pane] = p.title
+-- "Send to chat" targets: Carly, then every open agent chat ({pane, label, meta, icon, state}),
+-- named as Tern's tab list names them (Model.chatRow).
+local function chatList(cx: WindowCx): { { [string]: any } }
+	local tabNames: { [number]: string } = {}
+	for _, t in cx.session:tabs() do
+		tabNames[t.id] = t.name or ""
 	end
-	local out: { { pane: any, label: string } } = { { pane = "carly", label = "Carly" } }
+	local panes: { [number]: PaneInfo } = {}
+	for _, p in cx.session:panes() do
+		panes[p.pane] = p
+	end
+	local out: { { [string]: any } } = { { pane = "carly", label = "Carly", icon = "tile-carly" } }
 	-- Unknown optional fields are tern.json.null.
 	local function str(v: any): string?
 		return if type(v) == "string" then v else nil
@@ -393,7 +398,10 @@ local function chatList(cx: WindowCx): { { pane: any, label: string } }
 	end
 	for _, a in agents :: { AgentBlock } do
 		if a.state ~= "exited" then
-			table.insert(out, { pane = a.pane, label = Model.chatLabel(titles[a.pane] or "", str(a.cwd) or "", str(a.command), str(a.model), a.state) })
+			local p = panes[a.pane]
+			local row: { [string]: any } = Model.chatRow(p and p.tab and tabNames[p.tab], if p then p.title else "", str(a.cwd) or "", str(a.command), str(a.model), a.state)
+			row.pane, row.state = a.pane, a.state
+			table.insert(out, row)
 		end
 	end
 	return out

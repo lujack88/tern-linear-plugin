@@ -881,6 +881,43 @@
 		color: var(--lt-muted);
 	}
 
+	/* "Send to chat" rows: the tab list's icon, the title over a muted folder · model · state line. */
+	& .lt-pop-row[data-chat='true'] {
+		height: auto;
+		min-height: 40px;
+		padding: 4px 8px;
+	}
+
+	& .lt-chat-text {
+		display: flex;
+		flex: 1 1 0;
+		flex-direction: column;
+		min-width: 0;
+	}
+
+	& .lt-chat-text .lt-pop-label {
+		flex: none;
+	}
+
+	& .lt-chat-meta {
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+		font-size: 11.5px;
+		color: var(--lt-muted);
+	}
+
+	/* A chat at work or waiting for input: an accent dot before its meta line. */
+	& .lt-pop-row[data-state='working'] .lt-chat-meta::before,
+	& .lt-pop-row[data-state='waiting_input'] .lt-chat-meta::before {
+		content: "● ";
+		color: var(--lt-accent);
+	}
+
+	& .lt-pop-row[data-state='waiting_input'] .lt-chat-meta {
+		color: var(--lt-accent);
+	}
+
 	& .lt-pop-on {
 		color: var(--lt-accent);
 	}

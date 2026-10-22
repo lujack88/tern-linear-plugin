@@ -27,8 +27,9 @@ type Choice = { d: Create.Draft, ids: { string }, stateId: string, priority: num
 -- first click on Cancel, `choice` the Status/Priority/Assignee list drilled into, `chats` the
 -- "Send to chat" list drilled into; `anchor` the node it hangs under when not the issue's row or card.
 type Menu = { id: string, ids: { string }, cursor: number, armed: boolean, choice: Choice?, chats: boolean?, anchor: string? }
--- A "Send to chat" target from the window half: an agent's pane id or "carly", and its label.
-type Chat = { pane: any, label: string }
+-- A "Send to chat" target from the window half: an agent's pane id or "carly", its title (as the
+-- tab list names it), a muted meta line, its Tern icon name and agent state.
+type Chat = { pane: any, label: string, meta: string?, icon: string?, state: string? }
 type State = {
 	cx: BlockCx,
 	-- Bumped when the team changes or the key is withdrawn: callbacks of an older gen are dropped.
@@ -1085,7 +1086,7 @@ end
 
 -- Context menu ----------------------------------------------------------------
 
-type Item = { key: string, text: string?, hint: string?, sub: boolean?, danger: boolean? }
+type Item = { key: string, text: string?, hint: string?, sub: boolean?, danger: boolean?, chat: Chat? }
 
 local SEP: Item = { key = "sep" }
 
@@ -1104,7 +1105,7 @@ local function menuItems(state: State, m: Menu): { Item }
 		end
 		local out: { Item } = {}
 		for i, c in chats do
-			table.insert(out, { key = "chat-" .. i, text = c.label })
+			table.insert(out, { key = "chat-" .. i, text = c.label, chat = c })
 		end
 		return out
 	end
@@ -2071,13 +2072,31 @@ local function menuView(state: State, m: Menu): Node
 			table.insert(rows, el("div", "menu-sep", "sep" .. i, { class = "lt-menu-sep" }))
 			continue
 		end
-		local kids: { Node } = { el("span", "pop-label", "label", { class = "lt-pop-label", text = it.text }) }
+		local kids: { Node } = {}
+		local ch = it.chat
+		if ch and ch.icon then
+			table.insert(kids, { k = "icon", p = { name = ch.icon, key = "icon" } } :: any)
+		end
+		if ch and ch.meta then
+			table.insert(kids, el("span", "chat-text", "text", { class = "lt-chat-text" }, {
+				el("span", "pop-label", "label", { class = "lt-pop-label", text = it.text }),
+				el("span", "chat-meta", "meta", { class = "lt-chat-meta", text = ch.meta }),
+			}))
+		else
+			table.insert(kids, el("span", "pop-label", "label", { class = "lt-pop-label", text = it.text }))
+		end
 		if it.hint or it.sub then
 			table.insert(kids, el("span", "pop-hint", "hint", { class = "lt-pop-hint", text = if it.sub then "▸" else it.hint }))
 		end
 		table.insert(rows, el("button", "pop-row", it.key, {
 			class = "lt-pop-row",
-			attrs = { ["data-cursor"] = flag(i == m.cursor), ["data-danger"] = flag(it.danger == true), ["data-confirm"] = flag(it.key == "cancel" and m.armed) },
+			attrs = {
+				["data-cursor"] = flag(i == m.cursor),
+				["data-danger"] = flag(it.danger == true),
+				["data-confirm"] = flag(it.key == "cancel" and m.armed),
+				["data-chat"] = flag(ch ~= nil and ch.meta ~= nil),
+				["data-state"] = ch and ch.state,
+			},
 			actions = { click = "menu-run=" .. it.key },
 		}, kids))
 	end
@@ -2309,9 +2328,12 @@ tern.block.define("board", {
 		if ev.act == "chats" then
 			if state.listing and type(ev.chats) == "table" then
 				local chats: { Chat } = {}
+				local function str(v: any): string?
+					return if type(v) == "string" then v else nil
+				end
 				for _, ch in ev.chats do
 					if type(ch) == "table" and type(ch.label) == "string" and (type(ch.pane) == "number" or ch.pane == "carly") then
-						table.insert(chats, { pane = ch.pane, label = ch.label })
+						table.insert(chats, { pane = ch.pane, label = ch.label, meta = str(ch.meta), icon = str(ch.icon), state = str(ch.state) })
 					end
 				end
 				state.chats = chats
