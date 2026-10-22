@@ -839,6 +839,28 @@ end
 
 -- Actions -------------------------------------------------------------------
 
+-- Where `c` creates: the selected issue's column, else the first unstarted one, else the first.
+local function defaultColumn(cols: { Column }, selIdx: number?): Column?
+	if selIdx then
+		return cols[selIdx]
+	end
+	for _, col in cols do
+		if col.state.type == "unstarted" then
+			return col
+		end
+	end
+	return cols[1]
+end
+
+-- Keys skip collapsed columns and groups, as if they were empty.
+local function keyColumns(state: State): ({ Column }, number?)
+	local cols: { Column } = {}
+	for _, col in columnsOf(state) do
+		table.insert(cols, if state.folded[col.state.id] then { state = col.state, issues = {} } else col)
+	end
+	return cols, if visible(cols, state.sel) then Model.columnIndex(cols, stateIdOf(state, state.sel)) else nil
+end
+
 local function act(state: State, name: string, value: string, cx: BlockCx)
 	local d = state.draft
 	if d and string.sub(name, 1, 3) == "cm-" then
@@ -920,6 +942,12 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		state.lift, state.dropState = nil, nil
 	elseif name == "add" then
 		openDraft(state, value, false)
+	elseif name == "new" then
+		-- The header button: same State as `c`.
+		local col = defaultColumn(keyColumns(state))
+		if col then
+			openDraft(state, col.state.id, false)
+		end
 	elseif name == "rename" then
 		startRename(state, value)
 	elseif name == "cancel" then
@@ -972,19 +1000,6 @@ local function nextFilled(cols: { Column }, from: number, dir: number): Column?
 		i += dir
 	end
 	return nil
-end
-
--- Where `c` creates: the selected issue's column, else the first unstarted one, else the first.
-local function defaultColumn(cols: { Column }, selIdx: number?): Column?
-	if selIdx then
-		return cols[selIdx]
-	end
-	for _, col in cols do
-		if col.state.type == "unstarted" then
-			return col
-		end
-	end
-	return cols[1]
 end
 
 local function onKey(state: State, k: Key, cx: BlockCx): boolean?
@@ -1047,12 +1062,7 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		act(state, "undo", "", cx)
 		return true
 	end
-	-- Keys skip collapsed columns and groups, as if they were empty.
-	local cols: { Column } = {}
-	for _, col in columnsOf(state) do
-		table.insert(cols, if state.folded[col.state.id] then { state = col.state, issues = {} } else col)
-	end
-	local selIdx = if visible(cols, state.sel) then Model.columnIndex(cols, stateIdOf(state, state.sel)) else nil
+	local cols, selIdx = keyColumns(state)
 	if k.alt and not mod and name == "c" then
 		-- Linear's "create from template".
 		local col = defaultColumn(cols, selIdx)
@@ -1410,6 +1420,7 @@ local function header(state: State, count: number): { Node }
 			}),
 			el("span", "count", "count", { class = "lt-count", text = tostring(count) }),
 			el("span", "spacer", "sp", { class = "lt-spacer" }),
+			el("button", "new", "new", { class = "lt-new", text = "+ New issue", aria = "New issue", title = "New issue (c)", actions = { click = "new" } }),
 			status,
 			el("button", "refresh", "sync", { class = "lt-refresh", text = "↻", aria = "Sync now", title = "Sync now", actions = { click = "sync" } }),
 		}),

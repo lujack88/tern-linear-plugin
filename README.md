@@ -105,7 +105,7 @@ refuses, it returns to its old State.
 
 | Action | Key |
 | --- | --- |
-| New issue | click `+` on a column or group, or `c` |
+| New issue | click **+ New issue** in the header, click `+` on a column or group, or `c` |
 | New issue from a template | `Alt+C` |
 
 Both open a **New issue** modal, as in Linear: title, a Markdown description, and

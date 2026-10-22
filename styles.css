@@ -99,6 +99,22 @@
 		min-width: 0;
 	}
 
+	& .lt-new {
+		height: 24px;
+		padding: 0 10px;
+		margin-right: 8px;
+		border: 1px solid var(--lt-line);
+		border-radius: 6px;
+		font-size: 12px;
+		color: var(--lt-muted);
+	}
+
+	& .lt-new:hover {
+		background: rgb(from var(--tv-fg) r g b / 6%);
+		border-color: var(--sf-accent);
+		color: var(--tv-fg);
+	}
+
 	& .lt-sync {
 		font-size: 12px;
 		color: var(--lt-muted);
