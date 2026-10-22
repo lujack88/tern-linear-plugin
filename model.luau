@@ -518,9 +518,14 @@ function M.cleanRewrite(out: string): string?
 	return if s == "" then nil else s
 end
 
--- The one instruction closing a start message; `plan` is what to write ("the plan", "ONE plan covering all of them").
-local function startAsk(plan: string): string
-	return "Load and follow the `grilling` skill (skill://grilling): read the relevant code, interrogate me about the approach, then write " .. plan .. ". Do not implement anything until I approve the plan."
+-- The workflow closing every Start and Send to chat message; `plan` is what to write ("the plan", "ONE plan covering all of them").
+local function brief(plan: string): string
+	return "How to work this:\n"
+		.. "1. Load the `grill-with-docs` skill (skill://grill-with-docs): read the relevant code, then interrogate me about the approach. Note the decisions for the docs it keeps, and write them once I approve the plan.\n"
+		.. "2. Load the `show-me` skill (skill://show-me) to show me the approach visually, then write " .. plan .. ". Do not implement anything until I approve the plan.\n"
+		.. "3. Once approved, orchestrate: split the work into independent slices and delegate them to subagents, in parallel where they do not depend on each other. Verify each slice's result as it lands. Do the work on a branch and open a PR.\n"
+		.. "4. Before merging, have reviewer subagents review the PR and fix what they find. Then load the `visual-pr` skill (skill://visual-pr) for the PR, and merge it.\n\n"
+		.. "At any step, as soon as you see the work is very complicated or needs human QA, stop, tell me why, and wait for my go-ahead. Never merge such work until I say so."
 end
 
 -- URL, State, Priority, Assignee and Labels of `issue`, one "- " line each; unset ones are left out.
@@ -564,7 +569,7 @@ end
 function M.startPrompt(issue: any, title: string, stateName: string?, description: string?): string
 	return "Start working on Linear issue " .. issue.identifier .. ": " .. title .. ".\n\n"
 		.. issueBody(issue, stateName, description) .. "\n\n"
-		.. startAsk("the plan")
+		.. brief("the plan")
 end
 
 -- One issue of a multi-issue message; `description` nil means it could not be loaded.
@@ -587,18 +592,19 @@ function M.startPromptMany(entries: { StartEntry }): string
 	local idents, parts = sections(entries)
 	return "Start working on these " .. #entries .. " Linear issues together: " .. idents .. ".\n\n"
 		.. parts
-		.. startAsk("ONE plan covering all of them")
+		.. brief("ONE plan covering all of them")
 end
 
--- "Send to chat": `entries` handed to an open chat as context, with no instruction.
+-- "Send to chat": `entries` handed to an open chat, with the same workflow as Start.
 function M.contextPrompt(entries: { StartEntry }): string
 	if #entries == 1 then
 		local e = entries[1]
-		return "Here is Linear issue " .. e.issue.identifier .. " for context: " .. e.title .. ".\n\n"
-			.. issueBody(e.issue, e.stateName, e.description)
+		return "Here is Linear issue " .. e.issue.identifier .. ": " .. e.title .. ".\n\n"
+			.. issueBody(e.issue, e.stateName, e.description) .. "\n\n"
+			.. brief("the plan")
 	end
 	local idents, parts = sections(entries)
-	return "Here are " .. #entries .. " Linear issues for context: " .. idents .. ".\n\n" .. (string.gsub(parts, "\n+$", ""))
+	return "Here are " .. #entries .. " Linear issues: " .. idents .. ".\n\n" .. parts .. brief("ONE plan covering all of them")
 end
 
 -- Agents with their own tile icon in Tern's tab list; others get the generic agent tile.

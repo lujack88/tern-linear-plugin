@@ -103,8 +103,8 @@ icon and title Tern's tab list shows (the tab's name, else the pane title, e.g.
 for example `fixit-app · sonnet · idle`; a working or waiting chat gets an
 accent dot. Pick one to send it the issue
 (or the selection, up to 10): a message that starts "Here is Linear issue
-TES-4 for context:" with the same fields and description as Start, but no
-instruction. A busy chat queues it. The chat's pane is shown; Carly opens with
+TES-4:" with the same fields, description and workflow as Start. A busy chat
+queues it. The chat's pane is shown; Carly opens with
 the message.
 
 Keys while it is open: `↑`/`↓` (or `K`/`J`) move, `Enter` runs, `→`/`Enter` opens
@@ -200,10 +200,21 @@ untouched keeps the template's own formatting.
 
 Start opens a new omp chat in plan mode. Its first message is the issue:
 identifier, title, URL, State, priority, assignee, labels and description
-(fields the issue leaves unset are left out). It ends by telling omp to grill
-you about the approach with the `grilling` skill, then write the plan, and to
-implement nothing until you approve it. The chat runs in the board pane's
-directory, else your home.
+(fields the issue leaves unset are left out), then the workflow:
+
+1. grill you about the approach with the `grill-with-docs` skill, noting
+   decisions and writing them to docs once you approve the plan;
+2. show the approach with the `show-me` skill and write the plan, implementing
+   nothing until you approve it;
+3. orchestrate: delegate independent slices to subagents, in parallel, and
+   verify each, working on a branch, opening a PR;
+4. before merging, have reviewer subagents review the PR and fix their
+   findings, load the `visual-pr` skill, then merge.
+
+If the work is very complicated or needs human QA, omp is told to stop at any
+step as soon as it sees it, say why, wait for your go-ahead, and never merge
+it until you say so. The skills must be installed where omp finds them. The
+chat runs in the board pane's directory, else your home.
 
 `✕` (or `Delete` pressed twice) cancels an issue: it moves to the team's
 Canceled State. The plugin never deletes issues.
@@ -234,8 +245,8 @@ While at least one issue is selected, a bar at the bottom shows how many and:
   and clears the selection.
 - **▷ Start** (2 or more selected): opens one new omp chat on all of them, in
   the board's order, up to 10 issues. Its first message lists each issue's
-  fields and description and asks for one plan covering all of them. The
-  selection stays.
+  fields and description and the same workflow, with one plan covering all of
+  them. The selection stays.
 
 One undo (the undo bar or `Ctrl+Z`) reverts the whole bulk edit. The selection
 stays after a Status, Priority or Assignee change, as in Linear.

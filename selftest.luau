@@ -272,13 +272,35 @@ local cases: { { name: string, fn: () -> () } } = {
 		end,
 	},
 	{
+		name = "workflow brief",
+		fn = function()
+			local e = { issue = issue(4, "todo"), title = "Fix it", stateName = "Todo", description = "Steps here" }
+			local prompts = {
+				Model.startPrompt(e.issue, e.title, e.stateName, e.description),
+				Model.startPromptMany({ e, e }),
+				Model.contextPrompt({ e }),
+				Model.contextPrompt({ e, e }),
+			}
+			local steps = { "skill://grill-with-docs", "skill://show-me", "Do not implement", "subagents", "reviewer subagents", "skill://visual-pr", "merge it", "human QA", "wait for my go-ahead" }
+			for i, p in prompts do
+				local at = string.find(p, "Steps here", 1, true) or math.huge
+				for _, want in steps do
+					local s = string.find(p, want, 1, true)
+					check(s ~= nil and s > at, i .. ": " .. want .. " after the issue")
+				end
+				local _, n = string.gsub(p, "grill%-with%-docs", "")
+				check(n == 2, i .. ": brief once")
+			end
+		end,
+	},
+	{
 		name = "startPrompt",
 		fn = function()
 			local it = issue(4, "todo", { priority = 2, assignee = "Ada" })
 			it.labels = { nodes = { { name = "Bug" }, { name = "UI" } } }
 			local p = Model.startPrompt(it, "Fix it", "Todo", "Steps here")
 			check(string.find(p, "^Start working on Linear issue ENG%-4: Fix it%.") ~= nil, "lead")
-			for _, want in { "- URL: https://linear.app/x/issue/ENG-4", "- State: Todo", "- Priority: High", "- Assignee: Ada", "- Labels: Bug, UI", "## Description\n\nSteps here", "skill://grilling", "Do not implement" } do
+			for _, want in { "- URL: https://linear.app/x/issue/ENG-4", "- State: Todo", "- Priority: High", "- Assignee: Ada", "- Labels: Bug, UI", "## Description\n\nSteps here" } do
 				check(string.find(p, want, 1, true) ~= nil, want)
 			end
 			check(string.find(Model.startPrompt(issue(5, "todo"), "T", nil, " "), "(no description)", 1, true) ~= nil, "empty")
@@ -287,8 +309,6 @@ local cases: { { name: string, fn: () -> () } } = {
 			for _, unset in { "Priority", "Assignee", "Labels", "State", "Identifier", "Title:" } do
 				check(string.find(bare, unset, 1, true) == nil, "no " .. unset)
 			end
-			local _, grills = string.gsub(p, "skill://grilling", "")
-			check(grills == 1, "grilling once")
 		end,
 	},
 	{
@@ -302,11 +322,9 @@ local cases: { { name: string, fn: () -> () } } = {
 			check(string.find(p, "^Start working on these 2 Linear issues together: ENG%-4, ENG%-11%.") ~= nil, "lead")
 			local i4, i11 = string.find(p, "## ENG-4: Fix it", 1, true), string.find(p, "## ENG-11: Other", 1, true)
 			check(i4 ~= nil and i11 ~= nil and i4 < i11, "sections in order")
-			for _, want in { "- Priority: High", "- Assignee: Ada", "### Description\n\nSteps here", "could not be loaded", "ONE plan", "Do not implement" } do
+			for _, want in { "- Priority: High", "- Assignee: Ada", "### Description\n\nSteps here", "could not be loaded", "ONE plan" } do
 				check(string.find(p, want, 1, true) ~= nil, want)
 			end
-			local _, grills = string.gsub(p, "skill://grilling", "")
-			check(grills == 1, "grilling once")
 		end,
 	},
 	{
@@ -314,18 +332,16 @@ local cases: { { name: string, fn: () -> () } } = {
 		fn = function()
 			local a = issue(4, "todo", { priority = 2, assignee = "Ada" })
 			local one = Model.contextPrompt({ { issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" } })
-			check(string.find(one, "^Here is Linear issue ENG%-4 for context: Fix it%.\n\n%- URL: ") ~= nil, "lead")
-			check(string.find(one, "## Description\n\nSteps here$") ~= nil, "ends with the description")
+			check(string.find(one, "^Here is Linear issue ENG%-4: Fix it%.\n\n%- URL: ") ~= nil, "lead")
+			check(string.find(one, "## Description\n\nSteps here\n\n", 1, true) ~= nil, "description then brief")
 			local many = Model.contextPrompt({
 				{ issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" },
 				{ issue = issue(11, "todo"), title = "Other", stateName = nil, description = nil },
 			})
-			check(string.find(many, "^Here are 2 Linear issues for context: ENG%-4, ENG%-11%.") ~= nil, "many lead")
-			check(string.find(many, "## ENG-11: Other", 1, true) ~= nil and string.find(many, "read it in Linear%)$") ~= nil, "many sections")
+			check(string.find(many, "^Here are 2 Linear issues: ENG%-4, ENG%-11%.") ~= nil, "many lead")
+			check(string.find(many, "## ENG-11: Other", 1, true) ~= nil and string.find(many, "ONE plan", 1, true) ~= nil, "many sections")
 			for _, p in { one, many } do
-				for _, banned in { "grilling", "plan", "Start working" } do
-					check(string.find(p, banned, 1, true) == nil, "no " .. banned)
-				end
+				check(string.find(p, "Start working", 1, true) == nil, "no Start working")
 			end
 		end,
 	},
