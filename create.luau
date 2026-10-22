@@ -538,7 +538,8 @@ local PLACEHOLDER: { [Kind]: string } = {
 	due = "YYYY-MM-DD or pick below", template = "Use a template…",
 }
 
-function M.popover(d: Draft, c: Ctx): Node
+-- `at` anchors it to that node instead of its chip; `lead` goes above the search field (a Back row).
+function M.popover(d: Draft, c: Ctx, at: string?, lead: Node?): Node
 	local pop = d.pop :: Pop
 	local rows: { Node } = {}
 	-- Status, priority and due date need nothing fetched.
@@ -571,14 +572,18 @@ function M.popover(d: Draft, c: Ctx): Node
 			table.insert(rows, el("div", "pop-none", "none", { class = "lt-pop-none", text = "No matches" }))
 		end
 	end
+	local kids: { Node } = {
+		Field.node("input", { key = "q", role = ROLE .. "pop-q", placeholder = PLACEHOLDER[pop.kind] }, pop.q, "", SEARCH),
+		el("div", "pop-list", "opts", { class = "lt-pop-list" }, rows),
+	}
+	if lead then
+		table.insert(kids, 1, lead)
+	end
 	return {
 		k = "overlay",
 		-- The template chip sits in the modal's top row, not among the property chips.
-		p = { key = "pop", role = ROLE .. "pop", aria = PLACEHOLDER[pop.kind], anchor = { node = if pop.kind == "template" then d.root .. ".top.template" else d.anchor .. "." .. pop.kind, side = "below" }, size = "sm" },
-		c = {
-			Field.node("input", { key = "q", role = ROLE .. "pop-q", placeholder = PLACEHOLDER[pop.kind] }, pop.q, "", SEARCH),
-			el("div", "pop-list", "opts", { class = "lt-pop-list" }, rows),
-		},
+		p = { key = "pop", role = ROLE .. "pop", aria = PLACEHOLDER[pop.kind], anchor = { node = at or (if pop.kind == "template" then d.root .. ".top.template" else d.anchor .. "." .. pop.kind), side = "below" }, size = "sm" },
+		c = kids,
 	} :: any
 end
 

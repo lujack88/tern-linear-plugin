@@ -1134,6 +1134,28 @@
 	background: rgb(0 0 0 / 35%);
 }
 
+/* The issue context menu: the popover rows, with separators and a red Cancel. */
+.sf-layer[data-surface='plugin.linear-todo.board'] {
+	& .lt-menu-sep {
+		height: 1px;
+		margin: 4px 0;
+		background: var(--lt-line);
+	}
+
+	& .lt-pop-row[data-danger='true'] .lt-pop-label,
+	& .lt-pop-row[data-confirm='true'] {
+		color: var(--lt-red);
+	}
+
+	& .lt-pop-row[data-confirm='true'] {
+		font-weight: 500;
+	}
+
+	& .lt-menu-back {
+		color: var(--lt-muted);
+	}
+}
+
 /* Collapsible columns and List groups */
 .sf-main[data-surface='plugin.linear-todo.board'] {
 	& .lt-fold {

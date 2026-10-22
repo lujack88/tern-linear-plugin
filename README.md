@@ -68,10 +68,37 @@ expands with `▸`; collapsed ones keep their count, and the arrow keys skip the
 
 The View, the Mine toggle and the collapsed columns are remembered.
 
+## Clicking an issue
+
+- **Click** a row or card: its menu opens under it (below).
+- **Double-click**, or select it with the arrow keys and press `Enter`: the issue
+  view opens.
+- While an issue is lifted for a move, a click drops it instead.
+
+The checkbox, `⠿`, `✎`, `✕` and `▷` keep their own actions.
+
+### The issue menu
+
+As in Linear's right-click menu (Tern blocks get no right-click, so a plain click
+opens it; `m` opens it for the keyboard-selected issue):
+
+- **Status ▸**, **Priority ▸**, **Assignee ▸**: open the New issue modal's list in
+  the menu, the current value checked, with a filter field and a **‹ Back** row.
+- **Open issue** (`Enter`), **▷ Start in omp**, **Open in Linear**, **Copy ID**,
+  **Copy link**, **Rename** (`R`), and **Cancel issue** (click twice).
+
+When the clicked issue is one of several selected, the menu acts on the whole
+selection: its title says how many, and it offers Status, Priority, Assignee,
+**Copy IDs** and **Cancel N issues**. Every change offers one undo.
+
+Keys while it is open: `↑`/`↓` (or `K`/`J`) move, `Enter` runs, `→`/`Enter` opens
+a ▸ list, `←` (or `Backspace` in an empty filter) goes back, `Esc` closes. A click
+outside closes it.
+
 ## The issue view
 
-Click an issue (or select it with the arrow keys and press `Enter`) to open it in
-place of the board, as Linear's list does:
+Double-click an issue (or select it with the arrow keys and press `Enter`) to
+open it in place of the board, as Linear's list does:
 
 - **Title**: edit it in place. It saves on `Enter`, `Tab`, `Esc` or a click elsewhere.
 - **Description**: shown as Markdown. Click it to edit, and it saves when you leave
@@ -166,9 +193,10 @@ cancels the new issue, a cancel restores the previous State.
 | Clear the selection | `Esc`, or `×` in the bar |
 
 The checkbox shows when you hover an issue, and on every issue while any is
-selected; selected issues are tinted. Clicking the rest of the row or card still
-opens the issue. The selection is not saved; issues that are canceled, synced
-away, or hidden by Mine leave it, and switching workspaces clears it.
+selected; selected issues are tinted. A click on the rest of a selected row or
+card opens the issue menu for the whole selection. The selection is not saved;
+issues that are canceled, synced away, or hidden by Mine leave it, and switching
+workspaces clears it.
 
 While at least one issue is selected, a bar at the bottom shows how many and:
 

@@ -20,6 +20,12 @@ type Column = Model.Column
 type ViewName = "kanban" | "list"
 type Edit = { stateId: string, issueId: string, field: Field.Field }
 type Undo = { label: string, at: number, revert: () -> () }
+-- A Status/Priority/Assignee list over `ids` (the create modal's popover on a Draft of its own),
+-- and the values it opened with, so a pick is told apart from Esc.
+type Choice = { d: Create.Draft, ids: { string }, stateId: string, priority: number, assigneeId: string? }
+-- The context menu of issue `id`, acting on `ids`; `cursor` is the highlighted entry, `armed` the
+-- first click on Cancel, `choice` the Status/Priority/Assignee list drilled into.
+type Menu = { id: string, ids: { string }, cursor: number, armed: boolean, choice: Choice? }
 type State = {
 	cx: BlockCx,
 	-- Bumped when the team changes or the key is withdrawn: callbacks of an older gen are dropped.
@@ -70,7 +76,9 @@ type State = {
 	-- there), and the bulk bar's open Status/Priority/Assignee list.
 	picked: { [string]: boolean },
 	pickAnchor: string?,
-	bulk: Create.Draft?,
+	bulk: Choice?,
+	-- The context menu a click on an issue opens.
+	menu: Menu?,
 }
 
 local function nowSec(): number
@@ -175,7 +183,7 @@ local function resetBoard(state: State)
 	state.overlay, state.creating, state.draft, state.kept, state.meta, state.detail = {}, {}, nil, nil, nil, nil
 	state.sel, state.lift, state.dropState, state.confirm, state.edit, state.undo = nil, nil, nil, nil, nil, nil
 	state.error, state.failures, state.loading, state.fetchedAt = nil, 0, false, nil
-	state.picked, state.pickAnchor, state.bulk = {}, nil, nil
+	state.picked, state.pickAnchor, state.bulk, state.menu = {}, nil, nil, nil
 end
 
 local function columnsOf(state: State): { Column }
@@ -662,7 +670,7 @@ local function openDetail(state: State, id: string)
 	end
 	local stateId, title = Model.effective(issue, state.overlay)
 	local dt = Detail.new(issue, stateId or issue.state.id, title)
-	state.detail, state.sel, state.lift, state.dropState, state.confirm, state.switcher = dt, id, nil, nil, nil, false
+	state.detail, state.sel, state.lift, state.dropState, state.confirm, state.switcher, state.menu = dt, id, nil, nil, nil, false, nil
 	state.cx:frame({ { "focus", tern.json.null } })
 	if not state.meta then
 		loadMeta(state)
@@ -855,7 +863,7 @@ end
 local BULK = "bulk"
 -- Node path of the bulk bar; its lists hang under its buttons.
 local BULK_BAR = "dock.bulk"
--- A bulk list's Draft holds these until Create.choose writes the pick over one of them.
+-- A list's Draft holds these, for several issues, until Create.choose writes the pick over one of them.
 local UNSET_STATE, UNSET_PERSON, UNSET_PRIORITY = "", "?", -1
 
 type BulkKind = "status" | "priority" | "assignee"
@@ -975,30 +983,185 @@ local function cancelMany(state: State, ids: { string })
 	pushAll(state, steps, "Cancel", "Canceled")
 end
 
--- Opens the bulk bar's list of `kind`: the create modal's popover, on a Draft of its own.
-local function openBulk(state: State, kind: BulkKind, cx: BlockCx)
-	local b = Create.new(UNSET_STATE, UNSET_PERSON)
-	b.root, b.anchor, b.priority = BULK_BAR, BULK_BAR, UNSET_PRIORITY
-	Create.openPop(b, kind, cx)
-	state.bulk = b
+-- Opens a Status/Priority/Assignee list for `ids`: the create modal's popover on a Draft of its own,
+-- anchored under `anchor`'s `kind` child. One issue's own value is checked, as in Linear.
+local function openChoice(state: State, ids: { string }, kind: BulkKind, anchor: string, cx: BlockCx): Choice
+	local d = Create.new(UNSET_STATE, UNSET_PERSON)
+	d.root, d.anchor, d.priority = anchor, anchor, UNSET_PRIORITY
+	local one = if #ids == 1 then find(state, ids[1]) else nil
+	if one then
+		d.stateId = Model.effective(one, state.overlay) or UNSET_STATE
+		d.priority = if type(one.priority) == "number" then one.priority else 0
+		d.assigneeId = if type(one.assignee) == "table" then one.assignee.id else nil
+	end
+	Create.openPop(d, kind, cx)
 	if kind == "assignee" and not state.meta then
 		loadMeta(state)
 	end
+	return { d = d, ids = ids, stateId = d.stateId, priority = d.priority, assigneeId = d.assigneeId }
 end
 
--- Once the bulk list closed: applies what was picked in it (nothing after Esc or a click outside).
-local function takeBulk(state: State, b: Create.Draft)
-	if b.pop then
+-- Once the list closed, writes what was picked in it (nothing after Esc or a click outside);
+-- false while it is still open.
+local function takeChoice(state: State, c: Choice): boolean
+	local d = c.d
+	if d.pop then
+		return false
+	end
+	if d.stateId ~= c.stateId then
+		applyMany(state, c.ids, "status", d.stateId)
+	elseif d.priority ~= c.priority then
+		applyMany(state, c.ids, "priority", tostring(d.priority))
+	elseif d.assigneeId ~= c.assigneeId then
+		applyMany(state, c.ids, "assignee", d.assigneeId or "none")
+	end
+	return true
+end
+
+-- Context menu ----------------------------------------------------------------
+
+type Item = { key: string, text: string?, hint: string?, sub: boolean?, danger: boolean? }
+
+local SEP: Item = { key = "sep" }
+
+-- The node path of the row or card the menu hangs under.
+local function menuAnchor(state: State, m: Menu): string
+	return listPath(state, stateIdOf(state, m.id) or "") .. "." .. m.id
+end
+
+-- The menu's entries; several issues get only what applies to all of them.
+local function menuItems(m: Menu): { Item }
+	local n = #m.ids
+	local cancelText = if n > 1 then "Cancel " .. n .. " issues" else "Cancel issue"
+	local items: { Item } = {
+		{ key = "status", text = "Status", sub = true },
+		{ key = "priority", text = "Priority", sub = true },
+		{ key = "assignee", text = "Assignee", sub = true },
+		SEP,
+	}
+	if n == 1 then
+		table.insert(items, { key = "open", text = "Open issue", hint = "Enter" })
+		table.insert(items, { key = "start", text = "▷ Start in omp" })
+		table.insert(items, { key = "web", text = "Open in Linear" })
+		table.insert(items, { key = "copy-id", text = "Copy ID" })
+		table.insert(items, { key = "copy-link", text = "Copy link" })
+		table.insert(items, SEP)
+		table.insert(items, { key = "rename", text = "Rename", hint = "R" })
+	else
+		table.insert(items, { key = "copy-id", text = "Copy IDs" })
+		table.insert(items, SEP)
+	end
+	table.insert(items, { key = "cancel", text = if m.armed then cancelText .. "?" else cancelText, hint = "Del", danger = true })
+	return items
+end
+
+-- Opens the menu on issue `id`: on the whole selection when `id` is ticked, else on `id` alone.
+local function openMenu(state: State, id: string)
+	if not find(state, id) then
 		return
 	end
-	state.bulk = nil
-	if b.stateId ~= UNSET_STATE then
-		applyMany(state, pickedIds(state), "status", b.stateId)
-	elseif b.priority ~= UNSET_PRIORITY then
-		applyMany(state, pickedIds(state), "priority", tostring(b.priority))
-	elseif b.assigneeId ~= UNSET_PERSON then
-		applyMany(state, pickedIds(state), "assignee", b.assigneeId or "none")
+	local ids = if state.picked[id] then pickedIds(state) else { id }
+	state.menu, state.sel, state.confirm = { id = id, ids = ids, cursor = 1, armed = false }, id, nil
+end
+
+-- Closes the menu, taking the caret out of its list's search field.
+local function closeMenu(state: State)
+	local m = state.menu
+	state.menu = nil
+	if m and m.choice then
+		Create.closePop(m.choice.d, state.cx)
 	end
+end
+
+-- From the list back to the menu's entries.
+local function menuBack(m: Menu, cx: BlockCx)
+	if m.choice then
+		Create.closePop(m.choice.d, cx)
+		m.choice = nil
+	end
+end
+
+-- Runs entry `key` of the menu.
+local function runItem(state: State, m: Menu, key: string, cx: BlockCx)
+	local issue = find(state, m.id)
+	if not issue then
+		closeMenu(state)
+		return
+	end
+	if key == "status" or key == "priority" or key == "assignee" then
+		m.choice = openChoice(state, m.ids, key :: BulkKind, menuAnchor(state, m), cx)
+		return
+	elseif key == "cancel" and not m.armed then
+		m.armed = true
+		return
+	end
+	closeMenu(state)
+	if key == "open" then
+		openDetail(state, m.id)
+	elseif key == "start" then
+		startAgent(state, m.id)
+	elseif key == "web" and type(issue.url) == "string" then
+		cx:open(issue.url)
+	elseif key == "copy-id" then
+		local idents: { string } = {}
+		for _, id in m.ids do
+			local it = find(state, id)
+			if it then
+				table.insert(idents, it.identifier)
+			end
+		end
+		cx:copy(table.concat(idents, ", "))
+		cx:toast("success", "Copied " .. table.concat(idents, ", "))
+	elseif key == "copy-link" and type(issue.url) == "string" then
+		cx:copy(issue.url)
+		cx:toast("success", "Copied the link to " .. issue.identifier)
+	elseif key == "rename" then
+		startRename(state, m.id)
+	elseif key == "cancel" then
+		if #m.ids == 1 then
+			cancel(state, m.id)
+		else
+			cancelMany(state, m.ids)
+			unpick(state)
+		end
+	end
+end
+
+-- A key while the menu is open; it takes every key, so nothing acts on the board behind it.
+local function menuKey(state: State, m: Menu, k: Key, cx: BlockCx): boolean
+	local name = k.name
+	local c = m.choice
+	if c then
+		local pop = c.d.pop
+		if name == "left" or (name == "backspace" and pop and pop.q.text == "") then
+			menuBack(m, cx)
+			return true
+		end
+		Create.popKey(c.d, k, ctxOf(state), cx)
+		if takeChoice(state, c) then
+			closeMenu(state)
+		end
+		return true
+	end
+	local items = menuItems(m)
+	if name == "escape" then
+		closeMenu(state)
+	elseif name == "up" or name == "k" or name == "down" or name == "j" then
+		local dir = if name == "up" or name == "k" then -1 else 1
+		local i = m.cursor + dir
+		while items[i] and items[i].key == "sep" do
+			i += dir
+		end
+		if items[i] then
+			m.cursor = i
+		end
+	elseif name == "enter" or name == "right" then
+		local it = items[m.cursor]
+		if it and (name == "enter" or it.sub) then
+			runItem(state, m, it.key, cx)
+		end
+	end
+	return true
 end
 
 -- Actions -------------------------------------------------------------------
@@ -1055,9 +1218,31 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 	end
 	local b = state.bulk
 	if b and string.sub(name, 1, 3) == "cm-" then
-		Create.act(b, name, value, ctxOf(state), cx)
-		takeBulk(state, b)
+		Create.act(b.d, name, value, ctxOf(state), cx)
+		if takeChoice(state, b) then
+			state.bulk = nil
+		end
 		return
+	end
+	local m = state.menu
+	if m then
+		local c = m.choice
+		if c and string.sub(name, 1, 3) == "cm-" then
+			Create.act(c.d, name, value, ctxOf(state), cx)
+			if takeChoice(state, c) then
+				closeMenu(state)
+			end
+			return
+		elseif name == "menu-run" then
+			runItem(state, m, value, cx)
+			return
+		elseif name == "menu-back" then
+			menuBack(m, cx)
+			return
+		elseif name == "menu-close" then
+			closeMenu(state)
+			return
+		end
 	end
 	if name ~= "ws-pop" then
 		state.switcher = false
@@ -1096,6 +1281,10 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			return
 		end
 		state.confirm = nil
+		openMenu(state, value)
+	elseif name == "open" then
+		-- A double click: the first click opened the menu.
+		state.menu = nil
 		openDetail(state, value)
 	elseif name == "lift" then
 		if state.lift == value then
@@ -1137,7 +1326,7 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			state.confirm = nil
 		end
 		if value == "status" or value == "priority" or value == "assignee" then
-			openBulk(state, value, cx)
+			state.bulk = openChoice(state, pickedIds(state), value :: BulkKind, BULK_BAR, cx)
 		end
 	elseif name == "bulk-cancel" then
 		if state.confirm == BULK then
@@ -1221,9 +1410,15 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 	end
 	local b = state.bulk
 	if b then
-		local used = Create.popKey(b, k, ctxOf(state), cx)
-		takeBulk(state, b)
+		local used = Create.popKey(b.d, k, ctxOf(state), cx)
+		if takeChoice(state, b) then
+			state.bulk = nil
+		end
 		return used
+	end
+	local m = state.menu
+	if m then
+		return menuKey(state, m, k, cx)
 	end
 	if state.switcher then
 		local n = tonumber(k.name)
@@ -1355,6 +1550,9 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		else
 			return false
 		end
+		return true
+	elseif name == "m" and state.sel and find(state, state.sel) then
+		openMenu(state, state.sel)
 		return true
 	elseif (name == "r" or name == "f2") and state.sel then
 		act(state, "rename", state.sel, cx)
@@ -1511,7 +1709,7 @@ local function itemProps(state: State, issue: any, class: string, dropHere: bool
 		},
 		mark = if state.lift == id then "pick" else nil,
 		title = issue.url,
-		actions = { click = "sel=" .. id },
+		actions = { click = "sel=" .. id, dblclick = "open=" .. id },
 	}
 end
 
@@ -1697,7 +1895,7 @@ end
 -- The bulk bar: how many issues are ticked, their Status/Priority/Assignee lists, cancel and clear.
 local function bulkBar(state: State, n: number): Node
 	local armed = state.confirm == BULK
-	local open = state.bulk and state.bulk.pop and state.bulk.pop.kind
+	local open = state.bulk and state.bulk.d.pop and state.bulk.d.pop.kind
 	local function list(kind: BulkKind, text: string): Node
 		return el("button", "bulk-btn", kind, {
 			class = "lt-bulk-btn",
@@ -1721,6 +1919,39 @@ local function bulkBar(state: State, n: number): Node
 		el("span", "spacer", "sp", { class = "lt-spacer" }),
 		el("button", "bulk-btn", "clear", { class = "lt-bulk-btn", text = "×", aria = "Clear selection", title = "Clear selection (Esc)", actions = { click = "unpick" } }),
 	})
+end
+
+-- The context menu under its row or card: its entries, or the list drilled into with a Back row.
+local function menuView(state: State, m: Menu): Node
+	local at = menuAnchor(state, m)
+	local c = m.choice
+	if c then
+		return Create.popover(c.d, ctxOf(state), at, el("button", "pop-row", "back", { class = "lt-pop-row lt-menu-back", text = "‹ Back", actions = { click = "menu-back" } }))
+	end
+	local issue = find(state, m.id)
+	local rows: { Node } = {
+		el("div", "ws-section", "title", { class = "lt-ws-section", text = if #m.ids > 1 then #m.ids .. " issues" else (issue and issue.identifier or "") }),
+	}
+	for i, it in menuItems(m) do
+		if it.key == "sep" then
+			table.insert(rows, el("div", "menu-sep", "sep" .. i, { class = "lt-menu-sep" }))
+			continue
+		end
+		local kids: { Node } = { el("span", "pop-label", "label", { class = "lt-pop-label", text = it.text }) }
+		if it.hint or it.sub then
+			table.insert(kids, el("span", "pop-hint", "hint", { class = "lt-pop-hint", text = if it.sub then "▸" else it.hint }))
+		end
+		table.insert(rows, el("button", "pop-row", it.key, {
+			class = "lt-pop-row",
+			attrs = { ["data-cursor"] = flag(i == m.cursor), ["data-danger"] = flag(it.danger == true), ["data-confirm"] = flag(it.key == "cancel" and m.armed) },
+			actions = { click = "menu-run=" .. it.key },
+		}, kids))
+	end
+	return {
+		k = "overlay",
+		p = { key = "menu", role = ROLE .. "menu", aria = "Issue actions", anchor = { node = at, side = "below" }, size = "sm" },
+		c = { el("div", "pop-list", "list", { class = "lt-pop-list" }, rows) },
+	} :: any
 end
 
 -- A hint or the undo offer, then the bulk bar while issues are ticked (not over the issue view).
@@ -1777,6 +2008,10 @@ local function view(state: State): BlockView
 		state.detail = nil
 	end
 	local cols = columnsOf(state)
+	if state.menu and not visible(cols, state.menu.id) then
+		-- Its issue left the board (canceled, or moved out by a sync).
+		state.menu = nil
+	end
 	local kids = header(state, #Model.list(cols))
 	if not state.teamId then
 		return empty(kids, "No Linear workspace yet. Run Linear: add workspace and paste a personal API key.")
@@ -1799,7 +2034,8 @@ local function view(state: State): BlockView
 	local d = state.draft
 	local layer = if d then region("layer", Create.view(d, ctxOf(state)))
 		elseif state.switcher then region("layer", { Create.scrim("ws-pop"), switcher(state) })
-		elseif state.bulk then region("layer", { Create.scrim("cm-unpop"), Create.popover(state.bulk, ctxOf(state)) })
+		elseif state.bulk then region("layer", { Create.scrim("cm-unpop"), Create.popover(state.bulk.d, ctxOf(state)) })
+		elseif state.menu then region("layer", { Create.scrim("menu-close"), menuView(state, state.menu) })
 		else nil
 	return { main = region("main", kids), dock = dock(state), layer = layer }
 end
@@ -1891,10 +2127,10 @@ tern.block.define("board", {
 			end
 			return
 		end
-		-- The bulk list's search box.
-		local b = state.bulk
-		if b and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
-			Create.event(b, ev)
+		-- The search box of the bulk bar's or the menu's list.
+		local c = state.bulk or (state.menu and state.menu.choice)
+		if c and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
+			Create.event(c.d, ev)
 			return
 		end
 		local e = state.edit
