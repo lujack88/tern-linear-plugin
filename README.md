@@ -211,8 +211,11 @@ identifier, title, URL, State, priority, assignee, labels and description
    and verify each result. Work on a branch and open a PR.
 3. **Ship**: comment the PR link on the Linear issue(s) and move them to In
    Review (or the team's review state). Have reviewer subagents review the PR
-   and fix their findings, run skill://visual-pr, then merge and comment that
+   and fix their findings. Then omp runs a quick QA itself: runs it and
+   exercise the changed behavior. Run skill://visual-pr, merge and comment that
    it merged. Leave the issue(s) in review.
+4. **Hand over**: omp reports what changed, the PR link, and the exact QA
+   steps it ran with their results, for your final review.
 
 If the work is very complicated or needs human QA, omp is told to stop as soon
 as it sees it, say why, wait for your go-ahead, and never merge it without your
