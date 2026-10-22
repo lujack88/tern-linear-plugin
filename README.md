@@ -70,17 +70,18 @@ The View, the Mine toggle and the collapsed columns are remembered.
 
 ## Clicking an issue
 
-- **Click** a row or card: its menu opens under it (below).
-- **Double-click**, or select it with the arrow keys and press `Enter`: the issue
-  view opens.
+- **Click** a row or card, or select it with the arrow keys and press `Enter`:
+  the issue view opens.
+- **⋮** (at the right end of the row's or card's controls, shown on hover), or
+  `m` on the keyboard-selected issue: its menu opens under it (below).
 - While an issue is lifted for a move, a click drops it instead.
 
-The checkbox, `⠿`, `✎`, `✕` and `▷` keep their own actions.
+The checkbox, `⠿`, `✎`, `✕`, `⋮` and `▷` keep their own actions.
 
 ### The issue menu
 
-As in Linear's right-click menu (Tern blocks get no right-click, so a plain click
-opens it; `m` opens it for the keyboard-selected issue):
+As in Linear's right-click menu (Tern blocks get no right-click, so `⋮` or `m`
+opens it):
 
 - **Status ▸**, **Priority ▸**, **Assignee ▸**: open the New issue modal's list in
   the menu, the current value checked, with a filter field and a **‹ Back** row.
@@ -88,7 +89,7 @@ opens it; `m` opens it for the keyboard-selected issue):
   Linear**, **Copy ID**, **Copy link**, **Rename** (`R`), and **Cancel issue**
   (click twice).
 
-When the clicked issue is one of several selected, the menu acts on the whole
+When the issue is one of several selected, the menu acts on the whole
 selection: its title says how many, and it offers Status, Priority, Assignee,
 **▷ Start in omp**, **Send to chat ▸**, **Copy IDs** and **Cancel N issues**.
 Every change offers one undo.
@@ -107,7 +108,7 @@ outside closes it.
 
 ## The issue view
 
-Double-click an issue (or select it with the arrow keys and press `Enter`) to
+Click an issue (or select it with the arrow keys and press `Enter`) to
 open it in place of the board, as Linear's list does:
 
 - **Title**: edit it in place. It saves on `Enter`, `Tab`, `Esc` or a click elsewhere.
@@ -203,8 +204,8 @@ cancels the new issue, a cancel restores the previous State.
 | Clear the selection | `Esc`, or `×` in the bar |
 
 The checkbox shows when you hover an issue, and on every issue while any is
-selected; selected issues are tinted. A click on the rest of a selected row or
-card opens the issue menu for the whole selection. The selection is not saved;
+selected; selected issues are tinted. `⋮` (or `m`) on a selected row or card
+opens the issue menu for the whole selection. The selection is not saved;
 issues that are canceled, synced away, or hidden by Mine leave it, and switching
 workspaces clears it.
 

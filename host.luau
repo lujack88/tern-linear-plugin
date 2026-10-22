@@ -1387,11 +1387,9 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			return
 		end
 		state.confirm = nil
-		openMenu(state, value)
-	elseif name == "open" then
-		-- A double click: the first click opened the menu.
-		state.menu = nil
 		openDetail(state, value)
+	elseif name == "menu" then
+		openMenu(state, value)
 	elseif name == "lift" then
 		if state.lift == value then
 			state.lift, state.dropState = nil, nil
@@ -1716,7 +1714,7 @@ local function wsAvatar(w: any, key: string): Node
 	return el("span", "ws-avatar", key, { class = "lt-ws-avatar", attrs = { ["data-c"] = colours[sum % #colours + 1] }, text = Model.initials(w.orgName) })
 end
 
--- Grip, rename, start and cancel: the per-issue controls of a card or row.
+-- Grip, rename, start, cancel and ⋮ (the issue menu): the per-issue controls of a card or row.
 -- Cards pass withStart=false: their ▷ sits at the card's bottom-right instead.
 local function controls(state: State, id: string, into: { Node }, withStart: boolean)
 	local armed = state.confirm == id
@@ -1738,6 +1736,15 @@ local function controls(state: State, id: string, into: { Node }, withStart: boo
 		title = if armed then "Click again to cancel the issue" else "Cancel issue",
 		attrs = { ["data-confirm"] = flag(armed) },
 		actions = { click = "cancel=" .. id },
+	}))
+	local m = state.menu
+	table.insert(into, el("button", "act", "more", {
+		class = "lt-act",
+		text = "⋮",
+		aria = "More actions",
+		title = "More actions (m)",
+		attrs = { ["data-open"] = flag(m ~= nil and m.id == id and m.anchor == nil) },
+		actions = { click = "menu=" .. id },
 	}))
 end
 
@@ -1807,7 +1814,7 @@ local function pickBox(state: State, id: string): Node
 	})
 end
 
--- Props shared by a card and a row: selection, pending and drop marks, click and open.
+-- Props shared by a card and a row: selection, pending and drop marks, and the click that opens it.
 local function itemProps(state: State, issue: any, class: string, dropHere: boolean): { [string]: any }
 	local id = issue.id
 	return {
@@ -1821,7 +1828,7 @@ local function itemProps(state: State, issue: any, class: string, dropHere: bool
 		},
 		mark = if state.lift == id then "pick" else nil,
 		title = issue.url,
-		actions = { click = "sel=" .. id, dblclick = "open=" .. id },
+		actions = { click = "sel=" .. id },
 	}
 end
 

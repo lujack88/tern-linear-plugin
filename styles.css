@@ -310,7 +310,8 @@
 	& .lt-row:hover .lt-act,
 	& .lt-card[data-mark='pick'] .lt-grip,
 	& .lt-row[data-mark='pick'] .lt-grip,
-	& .lt-act[data-confirm='true'] {
+	& .lt-act[data-confirm='true'],
+	& .lt-act[data-open='true'] {
 		opacity: 1;
 	}
 
