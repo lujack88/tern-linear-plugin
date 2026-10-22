@@ -23,6 +23,23 @@
 		font: inherit;
 		cursor: pointer;
 	}
+
+	/* Start in omp: always shown, unlike the hover-only controls; the dock's bulk bar has one too. */
+	& .lt-start {
+		flex: 0 0 auto;
+		height: 24px;
+		padding: 0 10px;
+		border: 1px solid rgb(from var(--lt-accent) r g b / 50%);
+		border-radius: 6px;
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--lt-accent);
+		white-space: nowrap;
+	}
+
+	& .lt-start:hover {
+		background: rgb(from var(--lt-accent) r g b / 12%);
+	}
 }
 
 /* The layer shares the board's chips, state icons and label dots. */
@@ -329,23 +346,6 @@
 	}
 
 	& .lt-card[data-picked='true'] {
-		background: rgb(from var(--lt-accent) r g b / 12%);
-	}
-
-	/* Start in omp: always shown, unlike the hover-only controls. */
-	& .lt-start {
-		flex: 0 0 auto;
-		height: 24px;
-		padding: 0 10px;
-		border: 1px solid rgb(from var(--lt-accent) r g b / 50%);
-		border-radius: 6px;
-		font-size: 12px;
-		font-weight: 500;
-		color: var(--lt-accent);
-		white-space: nowrap;
-	}
-
-	& .lt-start:hover {
 		background: rgb(from var(--lt-accent) r g b / 12%);
 	}
 

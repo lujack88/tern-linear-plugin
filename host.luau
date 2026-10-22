@@ -694,10 +694,22 @@ local function closeDetail(state: State)
 	state.cx:frame({ { "focus", tern.json.null } })
 end
 
--- Hands issue `id` to the window half, which opens an omp chat on it (Model.START_TITLE).
-local function startAgent(state: State, id: string)
-	local issue = find(state, id)
-	if not issue then
+-- Most issues one Start hands to a single omp chat.
+local START_MAX = 10
+
+-- Hands issues `ids` (board order) to the window half, which opens one omp chat on them all
+-- (Model.START_TITLE) once every description has answered.
+local function startAgent(state: State, ids: { string })
+	local entries: { Model.StartEntry } = {}
+	for _, id in ids do
+		local issue = find(state, id)
+		if issue then
+			local stateId, title = Model.effective(issue, state.overlay)
+			local st = Model.stateById(state.states, stateId)
+			table.insert(entries, { issue = issue, title = title, stateName = st and st.name })
+		end
+	end
+	if #entries == 0 then
 		return
 	end
 	local key = state.key
@@ -705,24 +717,39 @@ local function startAgent(state: State, id: string)
 		state.cx:toast("error", "No Linear workspace yet", "Run Linear: add workspace")
 		return
 	end
-	local stateId, title = Model.effective(issue, state.overlay)
-	local st = Model.stateById(state.states, stateId)
-	local function go(description: string?)
-		kvSet("linear-todo.start", Model.startPrompt(issue, title, st and st.name, description))
+	if #entries > START_MAX then
+		state.cx:toast("error", "Start takes up to " .. START_MAX .. " issues")
+		return
+	end
+	local waiting = #entries
+	local function answered()
+		waiting -= 1
+		if waiting > 0 then
+			return
+		end
+		local e = entries[1]
+		kvSet("linear-todo.start", if #entries == 1 then Model.startPrompt(e.issue, e.title, e.stateName, e.description) else Model.startPromptMany(entries))
 		state.starting = true
 		state.cx:render()
 	end
-	state.cx:toast("info", "Starting " .. issue.identifier .. " in omp…")
-	local dt = state.detail
-	if dt and dt.id == id and dt.info then
-		go(if type(dt.info.description) == "string" then dt.info.description else "")
-		return
+	local function descOf(info: any?): string?
+		return if not info then nil elseif type(info.description) == "string" then info.description else ""
 	end
-	Linear.detail(key, id, function(info: any?)
-		if alive(state.cx.pane) then
-			go(if not info then nil elseif type(info.description) == "string" then info.description else "")
+	state.cx:toast("info", "Starting " .. (if #entries == 1 then entries[1].issue.identifier else #entries .. " issues") .. " in omp…")
+	local dt = state.detail
+	for _, e in entries do
+		if dt and dt.id == e.issue.id and dt.info then
+			e.description = descOf(dt.info)
+			answered()
+		else
+			Linear.detail(key, e.issue.id, function(info: any?)
+				if alive(state.cx.pane) then
+					e.description = descOf(info)
+					answered()
+				end
+			end)
 		end
-	end)
+	end
 end
 
 -- j / k: the next or previous issue in the board's own order.
@@ -853,7 +880,7 @@ local function runDetail(state: State, dt: Detail.Detail, intent: Detail.Intent)
 			state.cx:open(issue.url)
 		end
 	elseif intent == "start" then
-		startAgent(state, dt.id)
+		startAgent(state, { dt.id })
 	end
 end
 
@@ -1048,6 +1075,7 @@ local function menuItems(m: Menu): { Item }
 		table.insert(items, SEP)
 		table.insert(items, { key = "rename", text = "Rename", hint = "R" })
 	else
+		table.insert(items, { key = "start", text = "▷ Start in omp" })
 		table.insert(items, { key = "copy-id", text = "Copy IDs" })
 		table.insert(items, SEP)
 	end
@@ -1099,7 +1127,7 @@ local function runItem(state: State, m: Menu, key: string, cx: BlockCx)
 	if key == "open" then
 		openDetail(state, m.id)
 	elseif key == "start" then
-		startAgent(state, m.id)
+		startAgent(state, m.ids)
 	elseif key == "web" and type(issue.url) == "string" then
 		cx:open(issue.url)
 	elseif key == "copy-id" then
@@ -1262,7 +1290,7 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		state.starting = false
 		return
 	elseif name == "start" then
-		startAgent(state, value)
+		startAgent(state, { value })
 		return
 	elseif name == "ws" then
 		switchTo(state, value)
@@ -1336,6 +1364,11 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		else
 			state.confirm = BULK
 		end
+	elseif name == "bulk-start" then
+		if state.confirm == BULK then
+			state.confirm = nil
+		end
+		startAgent(state, pickedIds(state))
 	elseif name == "undo" then
 		local u = fresh(state)
 		if u then
@@ -1892,7 +1925,7 @@ local function switcher(state: State): Node
 	} :: any
 end
 
--- The bulk bar: how many issues are ticked, their Status/Priority/Assignee lists, cancel and clear.
+-- The bulk bar: how many issues are ticked, their Status/Priority/Assignee lists, cancel, Start (2+) and clear.
 local function bulkBar(state: State, n: number): Node
 	local armed = state.confirm == BULK
 	local open = state.bulk and state.bulk.d.pop and state.bulk.d.pop.kind
@@ -1904,7 +1937,7 @@ local function bulkBar(state: State, n: number): Node
 			actions = { click = "bulk-pop=" .. kind },
 		})
 	end
-	return el("div", "bulk", "bulk", { class = "lt-bulk" }, {
+	local kids = {
 		el("span", "bulk-count", "count", { class = "lt-bulk-count", text = n .. " selected" }),
 		list("status", "Status"),
 		list("priority", "Priority"),
@@ -1918,7 +1951,17 @@ local function bulkBar(state: State, n: number): Node
 		}),
 		el("span", "spacer", "sp", { class = "lt-spacer" }),
 		el("button", "bulk-btn", "clear", { class = "lt-bulk-btn", text = "×", aria = "Clear selection", title = "Clear selection (Esc)", actions = { click = "unpick" } }),
-	})
+	}
+	if n >= 2 then
+		table.insert(kids, 7, el("button", "start", "start", {
+			class = "lt-start",
+			text = "▷ Start",
+			aria = "Start in omp",
+			title = "Start working on the selected issues in one new omp chat",
+			actions = { click = "bulk-start" },
+		}))
+	end
+	return el("div", "bulk", "bulk", { class = "lt-bulk" }, kids)
 end
 
 -- The context menu under its row or card: its entries, or the list drilled into with a Back row.

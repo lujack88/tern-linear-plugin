@@ -435,8 +435,10 @@ function M.cleanRewrite(out: string): string?
 	return if s == "" then nil else s
 end
 
--- The first message of an omp chat started on `issue`; `description` nil means it could not be loaded.
-function M.startPrompt(issue: any, title: string, stateName: string?, description: string?): string
+local GRILL = "Load and follow the `grilling` skill (skill://grilling): interrogate me about the approach before anything is implemented.\n\n"
+
+-- URL, State, Priority, Assignee and Labels of `issue`, one "- " line each.
+local function startFacts(issue: any, stateName: string?): string
 	local prio = M.PRIORITIES[1].label
 	for _, p in M.PRIORITIES do
 		if p.value == issue.priority then
@@ -448,21 +450,47 @@ function M.startPrompt(issue: any, title: string, stateName: string?, descriptio
 	for _, l in (if type(issue.labels) == "table" and type(issue.labels.nodes) == "table" then issue.labels.nodes else {}) do
 		table.insert(labels, l.name)
 	end
-	local desc = if description == nil
-		then "(the description could not be loaded; read it in Linear)"
-		elseif string.match(description, "%S") then description
-		else "(no description)"
-	return "Start working on Linear issue " .. issue.identifier .. ": " .. title .. ".\n\n"
-		.. "Load and follow the `grilling` skill (skill://grilling): interrogate me about the approach before anything is implemented.\n\n"
-		.. "- Identifier: " .. issue.identifier .. "\n"
-		.. "- Title: " .. title .. "\n"
-		.. "- URL: " .. tostring(issue.url) .. "\n"
+	return "- URL: " .. tostring(issue.url) .. "\n"
 		.. "- State: " .. (stateName or "unknown") .. "\n"
 		.. "- Priority: " .. prio .. "\n"
 		.. "- Assignee: " .. (if type(a) == "table" and a.name then a.name else "unassigned") .. "\n"
-		.. "- Labels: " .. (if #labels > 0 then table.concat(labels, ", ") else "none") .. "\n\n"
-		.. "## Description\n\n" .. desc .. "\n\n"
+		.. "- Labels: " .. (if #labels > 0 then table.concat(labels, ", ") else "none") .. "\n"
+end
+
+local function startDescription(description: string?): string
+	return if description == nil
+		then "(the description could not be loaded; read it in Linear)"
+		elseif string.match(description, "%S") then description
+		else "(no description)"
+end
+
+-- The first message of an omp chat started on `issue`; `description` nil means it could not be loaded.
+function M.startPrompt(issue: any, title: string, stateName: string?, description: string?): string
+	return "Start working on Linear issue " .. issue.identifier .. ": " .. title .. ".\n\n"
+		.. GRILL
+		.. "- Identifier: " .. issue.identifier .. "\n"
+		.. "- Title: " .. title .. "\n"
+		.. startFacts(issue, stateName) .. "\n"
+		.. "## Description\n\n" .. startDescription(description) .. "\n\n"
 		.. "Read the relevant code, grill me per the grilling skill, then write the plan. Do not implement anything until I approve the plan."
+end
+
+-- One issue of a multi-issue start; `description` nil means it could not be loaded.
+export type StartEntry = { issue: any, title: string, stateName: string?, description: string? }
+
+-- The first message of one omp chat started on all of `entries`, in their order.
+function M.startPromptMany(entries: { StartEntry }): string
+	local idents, parts = {}, {}
+	for _, e in entries do
+		table.insert(idents, e.issue.identifier)
+		table.insert(parts, "## " .. e.issue.identifier .. ": " .. e.title .. "\n\n"
+			.. startFacts(e.issue, e.stateName) .. "\n"
+			.. "### Description\n\n" .. startDescription(e.description) .. "\n\n")
+	end
+	return "Start working on these " .. #entries .. " Linear issues together: " .. table.concat(idents, ", ") .. ".\n\n"
+		.. GRILL
+		.. table.concat(parts)
+		.. "Read the relevant code, grill me per the grilling skill, then write ONE plan covering all of them. Do not implement anything until I approve the plan."
 end
 
 return M

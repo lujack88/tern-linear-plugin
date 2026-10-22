@@ -33,6 +33,10 @@ chat on it in the board pane's cwd (else `~`). The command is
 `omp --config <plugin dir>/plan-mode.yml`: omp has no plan-mode flag, and that
 overlay sets `plan.defaultOnStartup` for this chat only. A failed description
 fetch still starts the chat; the prompt says the description could not be loaded.
+The bulk bar's **▷ Start** and the selection menu's **▷ Start in omp** use the same
+path for up to 10 issues: the descriptions load in parallel, and once all have
+answered the board writes one `Model.startPromptMany` message, so the window half
+is unchanged.
 
 The window injects again on `window_start`, 300 ms after load (a reload does not
 fire `window_start`), after adding or switching a workspace, and up to 3 s after

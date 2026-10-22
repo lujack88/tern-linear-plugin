@@ -286,6 +286,24 @@ local cases: { { name: string, fn: () -> () } } = {
 		end,
 	},
 	{
+		name = "startPromptMany",
+		fn = function()
+			local a = issue(4, "todo", { priority = 2, assignee = "Ada" })
+			local p = Model.startPromptMany({
+				{ issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" },
+				{ issue = issue(11, "todo"), title = "Other", stateName = nil, description = nil },
+			})
+			check(string.find(p, "^Start working on these 2 Linear issues together: ENG%-4, ENG%-11%.") ~= nil, "lead")
+			local i4, i11 = string.find(p, "## ENG-4: Fix it", 1, true), string.find(p, "## ENG-11: Other", 1, true)
+			check(i4 ~= nil and i11 ~= nil and i4 < i11, "sections in order")
+			for _, want in { "- Priority: High", "- Assignee: Ada", "### Description\n\nSteps here", "could not be loaded", "ONE plan", "Do not implement" } do
+				check(string.find(p, want, 1, true) ~= nil, want)
+			end
+			local _, grills = string.gsub(p, "skill://grilling", "")
+			check(grills == 1, "grilling once")
+		end,
+	},
+	{
 		name = "range",
 		fn = function()
 			local list = { issue(1, "todo"), issue(2, "todo"), issue(3, "prog"), issue(4, "done") }
