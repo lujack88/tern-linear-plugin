@@ -61,7 +61,10 @@ error.
   (at least 240 px each) do not fit.
 - **List**: one group per State, headed by its name and count, with compact rows
   (priority, identifier, title, labels, estimate, assignee). `↑`/`↓` run on
-  across groups.
+  across groups. Sub-issues nest under their parent when both are in the same
+  group, indented with connector lines as in Linear's List view; a parent shows
+  a `done/total` sub-issue pill (Kanban cards show it too, and sub-issue cards a
+  `↳ FIX-49` parent hint).
 
 Each column (Kanban) or group (List) collapses with the `▾` before its name, and
 expands with `▸`; collapsed ones keep their count, and the arrow keys skip them.

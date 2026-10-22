@@ -93,7 +93,9 @@ One sync is two steps:
 2. The team's issues, one request per page, `orderBy: updatedAt`, filtered to
    `team: { id: { eq: teamId } }`: every open State (`backlog`, `unstarted`,
    `started`), plus issues completed within the last 14 days. Up to 10 pages of
-   100; more is refused rather than truncated.
+   100; more is refused rather than truncated. Each issue carries its `parent
+   { id identifier }` and up to 50 `children { nodes { id state { type } } }`
+   for sub-issue nesting and progress.
 
 Both are cached together. The Mine toggle filters on `assignee.id == viewerId`
 on the board and makes no request.
@@ -160,7 +162,7 @@ An edit is applied to the board's overlay immediately, keyed by issue id:
 - `model.effective(issue, overlay)` merges the overlay over the fetched issue.
 - `model.columns(issues, states, overlay, opts)` regroups and sorts the result,
   one column per visible State; `model.list(columns)` flattens it into the List
-  View's row order.
+  View's row order, each group nested by `model.nest` (see Ordering).
 
 When Linear confirms, the returned issue replaces the fetched one and the
 overlay entry is dropped. When the call fails, the overlay entry is discarded
@@ -189,6 +191,18 @@ then Linear's State `position`. Inside a column, issues sort by priority (Urgent
 1, High 2, Medium 3, Low 4, none last), then `updatedAt` descending, then
 identifier ascending. This version does not read or write Linear's manual sort
 order (`sortOrder`), so a move never reorders an issue within a column.
+
+In the List View, `model.nest` then moves each sub-issue whose parent is in the
+same group right after its parent, siblings in that order, recursively; rows are
+indented one level per depth, capped at 3. A sub-issue whose parent is in another
+group, hidden by Mine, canceled or not fetched stays where it sorted, at the top
+level. Kanban columns keep the plain order. Caches from before these fields load
+as flat boards until the next sync.
+
+A parent's progress pill counts its sub-issues as done when their State type is
+`completed`, `canceled` or `duplicate`: nothing is left to do on them. It reads
+the parent's own `children` from the last sync, so a sub-issue moved on the board
+updates its parent's pill only after the next sync.
 
 ## "Delete" means cancel
 

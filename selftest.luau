@@ -11,7 +11,7 @@ local function check(cond: boolean, msg: string)
 	end
 end
 
-type IssueOpts = { title: string?, priority: number?, updatedAt: string?, assignee: string? }
+type IssueOpts = { title: string?, priority: number?, updatedAt: string?, assignee: string?, parent: number? }
 
 local function issue(n: number, stateId: string, opts: IssueOpts?): any
 	local o: IssueOpts = opts or {}
@@ -24,6 +24,7 @@ local function issue(n: number, stateId: string, opts: IssueOpts?): any
 		priority = o.priority,
 		state = { id = stateId },
 		assignee = if o.assignee then { id = o.assignee, name = o.assignee } else nil,
+		parent = if o.parent then { id = "i" .. o.parent, identifier = "ENG-" .. o.parent } else nil,
 	}
 end
 
@@ -344,6 +345,51 @@ local cases: { { name: string, fn: () -> () } } = {
 			check(table.concat(Model.range(list, "i2", "i2"), ",") == "i2", "one")
 			check(table.concat(Model.range(list, "gone", "i3"), ",") == "i3", "anchor gone")
 			check(#Model.range(list, "i1", "gone") == 0, "target gone")
+		end,
+	},
+	{
+		name = "nest",
+		fn = function()
+			-- Sorted by priority: children 3, 5 and grandchild 6 sort above their parents.
+			local cols = Model.columns({
+				issue(1, "todo", { priority = 4 }),
+				issue(2, "todo", { priority = 3 }),
+				issue(3, "todo", { priority = 1, parent = 1 }),
+				issue(4, "todo", { priority = 4, parent = 1 }),
+				issue(5, "todo", { priority = 2, parent = 4 }),
+				issue(6, "todo", { priority = 1, parent = 9 }),
+				issue(7, "prog", { parent = 2 }),
+				issue(8, "todo", { priority = 2, parent = 8 }),
+			}, STATES, {})
+			local sorted = ids(cols[2].issues, "identifier")
+			check(sorted == "ENG-3,ENG-6,ENG-5,ENG-8,ENG-2,ENG-1,ENG-4", "sorted " .. sorted)
+			local rows, tree = Model.nest(cols[2].issues)
+			local order = ids(rows, "identifier")
+			check(order == "ENG-6,ENG-8,ENG-2,ENG-1,ENG-3,ENG-4,ENG-5", "nested " .. order)
+			check(ids(Model.list(cols), "identifier") == order .. ",ENG-7", "list follows nest; parent in another group stays flat")
+			check(tree.i6.depth == 0 and tree.i8.depth == 0 and tree.i1.depth == 0, "parent missing or itself: top level")
+			check(tree.i3.depth == 1 and not tree.i3.last and tree.i4.depth == 1 and tree.i4.last, "children")
+			check(tree.i5.depth == 2 and tree.i5.last and #tree.i5.rails == 1 and tree.i5.rails[1] == false, "grandchild under a last child")
+			local loop = Model.nest({ issue(1, "todo", { parent = 2 }), issue(2, "todo", { parent = 1 }) })
+			check(ids(loop, "identifier") == "ENG-1,ENG-2", "parent loop still shown")
+			local deep = { issue(1, "todo") }
+			for n = 2, 6 do
+				table.insert(deep, issue(n, "todo", { parent = n - 1 }))
+			end
+			local _, dt = Model.nest(deep)
+			check(dt.i4.depth == 3 and dt.i6.depth == 3 and #dt.i6.rails == 2, "depth capped")
+		end,
+	},
+	{
+		name = "progress",
+		fn = function()
+			local function kid(t: string): any
+				return { id = t, state = { type = t } }
+			end
+			local done, total = Model.progress({ children = { nodes = { kid("completed"), kid("canceled"), kid("started"), kid("backlog") } } })
+			check(done == 2 and total == 4, "done " .. done .. "/" .. total)
+			done, total = Model.progress(issue(1, "todo"))
+			check(done == 0 and total == 0, "no children field (old cache)")
 		end,
 	},
 }

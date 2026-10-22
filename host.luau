@@ -1510,6 +1510,11 @@ local function nextFilled(cols: { Column }, from: number, dir: number): Column?
 	return nil
 end
 
+-- The id of a column's top issue as shown: List rows are nested, Kanban cards are not.
+local function firstShown(state: State, col: Column): string
+	return (if state.view == "list" then (Model.nest(col.issues))[1] else col.issues[1]).id
+end
+
 local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 	local d = state.draft
 	if d then
@@ -1619,7 +1624,7 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		if not to then
 			return false
 		end
-		state.sel, state.confirm = to.issues[1].id, nil
+		state.sel, state.confirm = firstShown(state, to), nil
 		return true
 	end
 	if name == "up" or name == "k" or name == "down" or name == "j" then
@@ -1629,7 +1634,7 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 			if not to then
 				return false
 			end
-			state.sel, state.confirm = to.issues[1].id, nil
+			state.sel, state.confirm = firstShown(state, to), nil
 			return true
 		end
 		-- Kanban steps within the column; List runs on across the State groups.
@@ -1820,12 +1825,42 @@ local function extras(issue: any, into: { Node })
 	end
 end
 
+-- Sub-issue progress "done/total" behind a ring; nil when the issue has no sub-issues.
+local function progress(issue: any): Node?
+	local done, total = Model.progress(issue)
+	if total == 0 then
+		return nil
+	end
+	return el("span", "progress", "progress", {
+		class = "lt-progress",
+		title = done .. " of " .. total .. " sub-issues done",
+		attrs = { ["data-p"] = if done == total then "done" elseif done > 0 then "part" else nil },
+	}, {
+		el("span", "ring", "ring", { class = "lt-ring" }),
+		el("span", "progress-n", "n", { class = "lt-progress-n", text = done .. "/" .. total }),
+	})
+end
+
 local function titleNode(state: State, issue: any, stateId: string, title: string, max: any): Node
 	local e = state.edit
 	if e and e.issueId == issue.id then
 		return Field.node("input", { key = "title", role = ROLE .. "input" }, e.field, title, listPath(state, stateId) .. "." .. issue.id .. ".title")
 	end
 	return el("div", "title", "title", { class = "lt-title", text = title, max = max })
+end
+
+-- A sub-issue row's indent: a 24px cell per level carrying the connector lines; the last cell
+-- holds the elbow into this row.
+local function treeNode(t: Model.Tree): Node
+	local cells: { Node } = {}
+	for k = 1, t.depth - 1 do
+		table.insert(cells, el("span", "rail", "r" .. k, { class = "lt-rail", attrs = { ["data-on"] = flag(t.rails[k] == true) } }))
+	end
+	table.insert(cells, el("span", "elbow", "elbow", { class = "lt-elbow", attrs = { ["data-last"] = flag(t.last) } }, {
+		el("span", "elbow-top", "top", { class = "lt-elbow-top" }),
+		el("span", "elbow-stem", "stem", { class = "lt-elbow-stem" }),
+	}))
+	return el("span", "tree", "tree", { class = "lt-tree" }, cells)
 end
 
 -- The tick box at an issue's left edge: shown on hover, and on every issue while any is ticked.
@@ -1866,8 +1901,12 @@ local function card(state: State, issue: any, col: Column, liftState: string?): 
 	local top: { Node } = {
 		pickBox(state, id),
 		el("span", "id", "id", { class = "lt-id", text = issue.identifier }),
-		el("span", "spacer", "sp", { class = "lt-spacer" }),
 	}
+	local parent = issue.parent
+	if type(parent) == "table" and type(parent.identifier) == "string" then
+		table.insert(top, el("span", "parent", "parent", { class = "lt-parent", text = "↳ " .. parent.identifier, title = "Sub-issue of " .. parent.identifier }))
+	end
+	table.insert(top, el("span", "spacer", "sp", { class = "lt-spacer" }))
 	controls(state, id, top, false)
 	local av = avatar(issue)
 	if av then
@@ -1878,6 +1917,10 @@ local function card(state: State, issue: any, col: Column, liftState: string?): 
 		el("span", "state", "state", { class = "lt-state", attrs = { ["data-type"] = col.state.type }, title = col.state.name }),
 	}
 	extras(issue, chips)
+	local pg = progress(issue)
+	if pg then
+		table.insert(chips, pg)
+	end
 	table.insert(chips, el("span", "spacer", "sp", { class = "lt-spacer" }))
 	local m = state.menu
 	table.insert(chips, el("button", "start", "start", {
@@ -1895,22 +1938,38 @@ local function card(state: State, issue: any, col: Column, liftState: string?): 
 	})
 end
 
-local function row(state: State, issue: any, col: Column, liftState: string?): Node
+-- `kids`: its sub-issues follow it in this group (the connector line starts under it).
+local function row(state: State, issue: any, col: Column, liftState: string?, tree: Model.Tree, kids: boolean): Node
 	local id = issue.id
 	local _, title = Model.effective(issue, state.overlay)
-	local kids: { Node } = {
-		pickBox(state, id),
-		prio(issue),
-		el("span", "id", "id", { class = "lt-id", text = issue.identifier }),
-		titleNode(state, issue, col.state.id, title, nil),
-	}
-	extras(issue, kids)
+	local items: { Node } = { pickBox(state, id) }
+	if tree.depth > 0 then
+		table.insert(items, treeNode(tree))
+	end
+	table.insert(items, prio(issue))
+	table.insert(items, el("span", "id", "id", { class = "lt-id", text = issue.identifier }))
+	local titled = titleNode(state, issue, col.state.id, title, nil)
+	table.insert(items, titled)
+	local pg = progress(issue)
+	if pg then
+		table.insert(items, pg)
+	end
+	-- The title hugs its text so the pill sits right after it; an open title input fills the row instead.
+	if not (state.edit and state.edit.issueId == id) then
+		table.insert(items, el("span", "spacer", "sp", { class = "lt-spacer" }))
+	end
+	extras(issue, items)
 	local av = avatar(issue)
 	if av then
-		table.insert(kids, av)
+		table.insert(items, av)
 	end
-	controls(state, id, kids, true)
-	return el("div", "row", id, itemProps(state, issue, "lt-row", liftState ~= nil and col.state.id ~= liftState), kids)
+	controls(state, id, items, true)
+	if kids then
+		table.insert(items, el("span", "stub", "stub", { class = "lt-stub" }))
+	end
+	local props = itemProps(state, issue, "lt-row", liftState ~= nil and col.state.id ~= liftState)
+	props.attrs["data-depth"] = if tree.depth > 0 then tostring(tree.depth) else nil
+	return el("div", "row", id, props, items)
 end
 
 -- A Kanban column, or a List group when `list`: the same head, with cards or rows under it.
@@ -1928,8 +1987,17 @@ local function column(state: State, col: Column, liftState: string?, list: boole
 	end
 	local folded = state.folded[stateId] == true
 	local shown: { any } = if folded then {} else col.issues
-	for _, issue in shown do
-		table.insert(items, if list then row(state, issue, col, liftState) else card(state, issue, col, liftState))
+	if list then
+		local tree: { [string]: Model.Tree }
+		shown, tree = Model.nest(shown)
+		for i, issue in shown do
+			local nxt = shown[i + 1]
+			table.insert(items, row(state, issue, col, liftState, tree[issue.id], nxt ~= nil and tree[nxt.id].depth > tree[issue.id].depth))
+		end
+	else
+		for _, issue in shown do
+			table.insert(items, card(state, issue, col, liftState))
+		end
 	end
 	if #items == 0 and not list and not folded then
 		table.insert(items, el("div", "none", "empty", { class = "lt-none", text = "No issues" }))

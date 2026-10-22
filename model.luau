@@ -104,15 +104,93 @@ function M.columns(issues: { any }, states: { any }, overlay: { [string]: Overla
 	return cols
 end
 
--- The List View's rows top to bottom: every column's issues, groups in board order.
+-- Deepest indentation of a sub-issue row; deeper descendants stay at this depth.
+local MAX_DEPTH = 3
+
+-- A List row's place in the sub-issue tree: `depth` 0 is top level; `last` marks its parent's last
+-- shown child (the rounded elbow); `rails[k]` (k < depth) whether the connector line of the
+-- ancestor at depth k runs on past this row to a later sibling.
+export type Tree = { depth: number, last: boolean, rails: { boolean } }
+
+local function parentId(issue: any): string?
+	local p = issue.parent
+	return if type(p) == "table" and type(p.id) == "string" then p.id else nil
+end
+
+-- One List group's rows: `issues` (sorted) with every sub-issue whose parent is in the same group
+-- moved right after that parent, siblings in their sorted order, recursively; and each id's Tree.
+-- A sub-issue whose parent is not in `issues` stays where it sorted, at depth 0.
+function M.nest(issues: { any }): ({ any }, { [string]: Tree })
+	local here: { [string]: boolean } = {}
+	for _, issue in issues do
+		here[issue.id] = true
+	end
+	local kids: { [string]: { any } } = {}
+	local roots: { any } = {}
+	for _, issue in issues do
+		local p = parentId(issue)
+		if p and p ~= issue.id and here[p] then
+			kids[p] = kids[p] or {}
+			table.insert(kids[p], issue)
+		else
+			table.insert(roots, issue)
+		end
+	end
+	local out: { any } = {}
+	local tree: { [string]: Tree } = {}
+	local function visit(issue: any, depth: number, last: boolean, rails: { boolean })
+		if tree[issue.id] then
+			return
+		end
+		tree[issue.id] = { depth = math.min(depth, MAX_DEPTH), last = last, rails = rails }
+		table.insert(out, issue)
+		local list = kids[issue.id]
+		if not list then
+			return
+		end
+		local sub = table.clone(rails)
+		if depth >= 1 and depth < MAX_DEPTH then
+			table.insert(sub, not last)
+		end
+		for i, c in list do
+			visit(c, depth + 1, i == #list, sub)
+		end
+	end
+	for _, issue in roots do
+		visit(issue, 0, false, {})
+	end
+	-- A parent loop has no root: start it at its first member rather than drop it.
+	for _, issue in issues do
+		visit(issue, 0, false, {})
+	end
+	return out, tree
+end
+
+-- The List View's rows top to bottom: every column's issues nested, groups in board order.
 function M.list(cols: { Column }): { any }
 	local out: { any } = {}
 	for _, col in cols do
-		for _, issue in col.issues do
+		for _, issue in (M.nest(col.issues)) do
 			table.insert(out, issue)
 		end
 	end
 	return out
+end
+
+-- State types whose sub-issues count as done: canceled ones too, as nothing is left to do on them.
+local CLOSED = { completed = true, canceled = true, duplicate = true }
+
+-- An issue's sub-issue progress: done and total (0 without sub-issues; Linear sends up to 50).
+function M.progress(issue: any): (number, number)
+	local c = issue.children
+	local nodes = if type(c) == "table" and type(c.nodes) == "table" then c.nodes else {}
+	local done = 0
+	for _, n in nodes do
+		if type(n.state) == "table" and CLOSED[n.state.type] then
+			done += 1
+		end
+	end
+	return done, #nodes
 end
 
 -- The ids of `list` from `a` to `b` inclusive, in list order either way (a Shift-click range);
