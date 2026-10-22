@@ -281,7 +281,7 @@ local cases: { { name: string, fn: () -> () } } = {
 				Model.contextPrompt({ e }),
 				Model.contextPrompt({ e, e }),
 			}
-			local steps = { "skill://grill-with-docs", "skill://show-me", "Implement nothing until I approve", "In Progress", "subagents", "open a PR", "In Review", "reviewer subagents", "QA it yourself", "skill://visual-pr", "merge", "Leave the issue(s) in review", "exact QA steps", "human QA", "wait for my go-ahead" }
+			local steps = { "skill://grill-with-docs", "skill://show-me", "Implement nothing until I approve", "In Progress", "subagents", "open a PR", "In Review", "reviewer subagents", "QA it yourself", "advisor", "needs human QA", "skill://visual-pr", "Merge by default", "Leave the issue(s) in review", "exact QA steps", "human QA", "wait for my OK before merging" }
 			for i, p in prompts do
 				local at = string.find(p, "Steps here", 1, true) or math.huge
 				for _, want in steps do

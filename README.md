@@ -212,17 +212,20 @@ identifier, title, URL, State, priority, assignee, labels and description
 3. **Ship**: comment the PR link on the Linear issue(s) and move them to In
    Review (or the team's review state). Have reviewer subagents review the PR
    and fix their findings. Then omp runs a quick QA itself: runs it and
-   exercises the changed behavior, merges and comments that it merged, and
-   leaves the issue(s) in review.
+   exercises the changed behavior. Omp merges by default. For difficult PRs
+   (risky, large, or hard to verify), omp first asks the advisor whether
+   human QA is needed; if it is, omp tells you why and waits for your OK
+   before merging. Omp comments when it merges and leaves the issue(s) in
+   review.
 4. **Hand over**: omp runs skill://visual-pr for the PR, then reports what
    changed, the PR link, and the exact QA steps it ran with their results, for
    your final review.
 
-If the work is very complicated or needs human QA, omp is told to stop as soon
-as it sees it, say why, wait for your go-ahead, and never merge it without your
-OK. The skills must be installed where omp finds them. Linear updates need a
-Linear tool (e.g. the Linear MCP) in that chat. The chat opens in its own tab
-and runs in the board pane's directory, else your home.
+If the work turns out very complicated at any step, omp is told to stop, say
+why and wait for your go-ahead. The skills must be installed where omp finds
+them. Linear updates need a Linear tool (e.g. the Linear MCP) in that chat.
+The chat opens in its own tab and runs in the board pane's directory, else
+your home.
 
 `✕` (or `Delete` pressed twice) cancels an issue: it moves to the team's
 Canceled State. The plugin never deletes issues.

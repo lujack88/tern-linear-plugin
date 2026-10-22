@@ -523,9 +523,9 @@ local function brief(plan: string): string
 	return "Workflow:\n"
 		.. "1. Plan: load skill://grill-with-docs, read the relevant code and grill me on the approach. Then load skill://show-me to show it visually and write " .. plan .. ". Implement nothing until I approve; write the grill-with-docs docs after approval.\n"
 		.. "2. Build: move the Linear issue(s) to In Progress and comment the approved plan on them. Split the work into independent slices for parallel subagents and verify each result. Work on a branch and open a PR.\n"
-		.. "3. Ship: comment the PR link on the Linear issue(s) and move them to In Review (or the team's review state). Have reviewer subagents review the PR and fix their findings. Then QA it yourself quickly: run it and exercise the changed behavior. Merge and comment that it merged. Leave the issue(s) in review.\n"
+		.. "3. Ship: comment the PR link on the Linear issue(s) and move them to In Review (or the team's review state). Have reviewer subagents review the PR and fix their findings. Then QA it yourself quickly: run it and exercise the changed behavior. Merge by default. If the PR is difficult (risky, large, or hard to verify), first ask the advisor whether it needs human QA; if it does, tell me why and wait for my OK before merging. Comment on the issue(s) when it merges. Leave the issue(s) in review.\n"
 		.. "4. Hand over for my final review: run skill://visual-pr for the PR, then report what changed, the PR link, and the exact QA steps you ran with their results.\n\n"
-		.. "If the work is very complicated or needs human QA, stop as soon as you see it, tell me why and wait for my go-ahead; never merge it without my OK."
+		.. "If the work turns out very complicated at any step, stop, tell me why and wait for my go-ahead."
 end
 
 -- URL, State, Priority, Assignee and Labels of `issue`, one "- " line each; unset ones are left out.
