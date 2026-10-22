@@ -217,9 +217,9 @@ identifier, title, URL, State, priority, assignee, labels and description
    human QA is needed; if it is, omp tells you why and waits for your OK
    before merging. Omp comments when it merges and leaves the issue(s) in
    review.
-4. **Hand over**: omp runs skill://visual-pr for the PR, then reports what
-   changed, the PR link, and the exact QA steps it ran with their results, for
-   your final review.
+4. **Hand over**: omp reports what changed, the PR link, and the exact QA
+   steps it ran with their results, then runs skill://visual-pr last so its
+   output is the final message, for your final review.
 
 If the work turns out very complicated at any step, omp is told to stop, say
 why and wait for your go-ahead. The skills must be installed where omp finds
