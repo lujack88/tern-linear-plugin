@@ -30,7 +30,7 @@ export type Detail = {
 }
 
 -- What the host should do after a key, click or event: "close", "title" / "desc" (save that
--- field), "comment" (post it), "next" / "prev" (open the neighbouring issue), "web" or "undo".
+-- field), "comment" (post it), "next" / "prev" (open the neighbouring issue), "web", "start" or "undo".
 export type Intent = string
 
 local function el(tag: string, role: string, key: string, props: { [string]: any }?, children: { Node }?): Node
@@ -251,6 +251,8 @@ function M.act(dt: Detail, name: string, value: string, c: Create.Ctx, cx: Block
 		return "close"
 	elseif name == "dt-web" then
 		return "web"
+	elseif name == "dt-start" then
+		return "start"
 	elseif name == "dt-send" then
 		return "comment"
 	elseif name == "dt-desc" then
@@ -289,6 +291,7 @@ function M.view(dt: Detail, issue: any, c: Create.Ctx, armed: boolean): { Node }
 			el("span", "ws", "team", { class = "lt-ws", text = c.teamKey }),
 			el("span", "dt-crumb", "crumb", { class = "lt-dt-crumb", text = issue.identifier }),
 			el("span", "spacer", "sp", { class = "lt-spacer" }),
+			el("button", "start", "start", { class = "lt-start", text = "▷ Start", title = "Start working on this issue in a new omp chat", actions = { click = "dt-start" } }),
 			el("button", "dt-web", "web", { class = "lt-tab", text = "Open in Linear ↗", title = issue.url, actions = { click = "dt-web" } }),
 			el("button", "act", "cancel", {
 				class = "lt-tab lt-del",

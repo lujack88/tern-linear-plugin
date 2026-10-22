@@ -81,8 +81,8 @@ place of the board, as Linear's list does:
   shortcuts. Each change is written to Linear at once.
 - **Activity**: who created the issue, then the comments, oldest first. Write a
   comment in the box at the bottom and send it with **Comment** or `Ctrl+Enter`.
-- **Header**: `←` back to the board (`Esc`), **Open in Linear ↗**, and
-  **Cancel issue** (click twice).
+- **Header**: `←` back to the board (`Esc`), **▷ Start**, **Open in Linear ↗**,
+  and **Cancel issue** (click twice).
 
 `J` / `K` open the next or previous issue in the board's order. Every edit offers
 the usual one-step undo. Times are shown in UTC. Comments can be read and added
@@ -137,11 +137,18 @@ not show (sub-issues, for example). Every property the modal shows is sent as
 shown, so clearing a chip clears the template's value. Leaving the description
 untouched keeps the template's own formatting.
 
-## Renaming, canceling
+## Renaming, canceling, starting
 
 | Action | Key |
 | --- | --- |
 | Rename | click ✎, or `r` / `F2` |
+| Start in omp | click **▷ Start** on a card, a row or in the issue view |
+
+Start opens a new omp chat in plan mode. Its first message is the issue:
+identifier, title, URL, State, priority, assignee, labels and description. It
+tells omp to grill you about the approach with the `grilling` skill, then write
+the plan, and to implement nothing until you approve it. The chat runs in the
+board pane's directory, else your home.
 
 `✕` (or `Delete` pressed twice) cancels an issue: it moves to the team's
 Canceled State. The plugin never deletes issues.

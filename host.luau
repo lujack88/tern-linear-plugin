@@ -58,6 +58,8 @@ type State = {
 	switcher: boolean,
 	-- "Add workspace…" was picked: the title asks the window half to run its key prompt.
 	adding: boolean,
+	-- "Start" was clicked: the title asks the window half to open an omp chat on kv `linear-todo.start`.
+	starting: boolean,
 	-- The issue opened from the board (Linear's issue view), drawn instead of the board.
 	detail: Detail.Detail?,
 	view: ViewName,
@@ -672,6 +674,37 @@ local function closeDetail(state: State)
 	state.cx:frame({ { "focus", tern.json.null } })
 end
 
+-- Hands issue `id` to the window half, which opens an omp chat on it (Model.START_TITLE).
+local function startAgent(state: State, id: string)
+	local issue = find(state, id)
+	if not issue then
+		return
+	end
+	local key = state.key
+	if not key or not setupOf() then
+		state.cx:toast("error", "No Linear workspace yet", "Run Linear: add workspace")
+		return
+	end
+	local stateId, title = Model.effective(issue, state.overlay)
+	local st = Model.stateById(state.states, stateId)
+	local function go(description: string?)
+		kvSet("linear-todo.start", Model.startPrompt(issue, title, st and st.name, description))
+		state.starting = true
+		state.cx:render()
+	end
+	state.cx:toast("info", "Starting " .. issue.identifier .. " in omp…")
+	local dt = state.detail
+	if dt and dt.id == id and dt.info then
+		go(if type(dt.info.description) == "string" then dt.info.description else "")
+		return
+	end
+	Linear.detail(key, id, function(info: any?)
+		if alive(state.cx.pane) then
+			go(if not info then nil elseif type(info.description) == "string" then info.description else "")
+		end
+	end)
+end
+
 -- j / k: the next or previous issue in the board's own order.
 local function stepDetail(state: State, dt: Detail.Detail, dir: number)
 	local list = Model.list(columnsOf(state))
@@ -799,6 +832,8 @@ local function runDetail(state: State, dt: Detail.Detail, intent: Detail.Intent)
 		if issue and type(issue.url) == "string" then
 			state.cx:open(issue.url)
 		end
+	elseif intent == "start" then
+		startAgent(state, dt.id)
 	end
 end
 
@@ -845,6 +880,12 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		return
 	elseif name == "ws-added" then
 		state.adding = false
+		return
+	elseif name == "started" then
+		state.starting = false
+		return
+	elseif name == "start" then
+		startAgent(state, value)
 		return
 	elseif name == "ws" then
 		switchTo(state, value)
@@ -1150,7 +1191,7 @@ local function wsAvatar(w: any, key: string): Node
 	return el("span", "ws-avatar", key, { class = "lt-ws-avatar", attrs = { ["data-c"] = colours[sum % #colours + 1] }, text = Model.initials(w.orgName) })
 end
 
--- Grip, rename and cancel: the per-issue controls of a card or row.
+-- Grip, rename, start and cancel: the per-issue controls of a card or row.
 local function controls(state: State, id: string, into: { Node })
 	local armed = state.confirm == id
 	table.insert(into, el("button", "grip", "grip", {
@@ -1161,6 +1202,7 @@ local function controls(state: State, id: string, into: { Node })
 		actions = { click = "lift=" .. id },
 	}))
 	table.insert(into, el("button", "act", "rename", { class = "lt-act", text = "✎", aria = "Rename", title = "Rename", actions = { click = "rename=" .. id } }))
+	table.insert(into, el("button", "start", "start", { class = "lt-start", text = "▷ Start", aria = "Start in omp", title = "Start in omp", actions = { click = "start=" .. id } }))
 	table.insert(into, el("button", "act", "cancel", {
 		class = "lt-act lt-del",
 		text = if armed then "Cancel?" else "✕",
@@ -1504,6 +1546,7 @@ tern.block.define("board", {
 			keys = {},
 			switcher = false,
 			adding = false,
+			starting = false,
 			loading = false,
 			failures = 0,
 			view = if kvGet("linear-todo.view") == "list" then "list" else "kanban",
@@ -1532,6 +1575,8 @@ tern.block.define("board", {
 	title = function(state: State): string?
 		if state.adding then
 			return Model.ADD_TITLE
+		elseif state.starting then
+			return Model.START_TITLE
 		end
 		local s = setupOf()
 		return "Linear · " .. (if s and s.teamKey then (s.orgName or "") .. " · " .. s.teamKey else "not set up")

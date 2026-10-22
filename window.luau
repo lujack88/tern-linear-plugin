@@ -376,18 +376,40 @@ local function upgrade(cx: WindowCx)
 	end)
 end
 
--- The board's "Add workspace…": it sets its title to Model.ADD_TITLE, the window takes that as
--- the request, acknowledges it (the title reverts) and runs the key prompt.
+-- The board's "Add workspace…" and "Start": it sets its title to Model.ADD_TITLE or
+-- Model.START_TITLE, the window takes that as the request, acknowledges it (the title reverts)
+-- and runs the key prompt, or opens an omp chat on the prompt the board left in kv `start`.
 tern.on("title", function(ev: TitleEvent, cx: WindowCx)
-	if ev.title ~= Model.ADD_TITLE then
+	if ev.title ~= Model.ADD_TITLE and ev.title ~= Model.START_TITLE then
 		return
 	end
 	local panes = boardPanes(cx)
 	if not table.find(panes, ev.pane) then
 		return
 	end
-	send(cx, panes, { ev = "action", act = "ws-added" })
-	addWorkspace(cx)
+	if ev.title == Model.ADD_TITLE then
+		send(cx, panes, { ev = "action", act = "ws-added" })
+		addWorkspace(cx)
+		return
+	end
+	send(cx, panes, { ev = "action", act = "started" })
+	local prompt = kvGet(P .. "start")
+	kvSet(P .. "start", nil)
+	if type(prompt) ~= "string" then
+		return
+	end
+	local cwd = "~"
+	for _, p in cx.session:panes() do
+		if p.pane == ev.pane and p.cwd and p.cwd ~= "" then
+			cwd = p.cwd
+		end
+	end
+	-- omp has no plan-mode flag; this overlay sets plan.defaultOnStartup for the new chat only.
+	local command = 'omp --config "' .. tern.plugin.dir .. '/plan-mode.yml"'
+	local ok, err = pcall(cx.agents.start, cx.agents, { prompt = prompt, cwd = cwd, command = command })
+	if not ok then
+		cx:toast("error", "Could not start omp", tostring(err))
+	end
 end)
 
 local function start(cx: WindowCx)

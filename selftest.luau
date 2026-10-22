@@ -270,6 +270,21 @@ local cases: { { name: string, fn: () -> () } } = {
 			check(not Linear.retryable("Linear: x"), "linear")
 		end,
 	},
+	{
+		name = "startPrompt",
+		fn = function()
+			local it = issue(4, "todo", { priority = 2, assignee = "Ada" })
+			it.labels = { nodes = { { name = "Bug" }, { name = "UI" } } }
+			local p = Model.startPrompt(it, "Fix it", "Todo", "Steps here")
+			check(string.find(p, "^Start working on Linear issue ENG%-4: Fix it%.") ~= nil, "lead")
+			for _, want in { "- URL: https://linear.app/x/issue/ENG-4", "- State: Todo", "- Priority: High", "- Assignee: Ada", "- Labels: Bug, UI", "## Description\n\nSteps here", "skill://grilling", "Do not implement" } do
+				check(string.find(p, want, 1, true) ~= nil, want)
+			end
+			check(string.find(Model.startPrompt(issue(5, "todo"), "T", nil, " "), "(no description)", 1, true) ~= nil, "empty")
+			local bare = Model.startPrompt(issue(5, "todo"), "T", nil, nil)
+			check(string.find(bare, "could not be loaded", 1, true) ~= nil and string.find(bare, "No priority", 1, true) ~= nil, "unloaded")
+		end,
+	},
 }
 
 -- Runs every case; returns how many passed and the first failure as "<case>: <msg>".

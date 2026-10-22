@@ -210,6 +210,10 @@ end
 -- the keychain or open prompts, so the window watches board titles for this one.
 M.ADD_TITLE = "Linear · adding a workspace…"
 
+-- The board's pane title while it asks the window half to start an omp chat on the issue in kv
+-- `linear-todo.start`: only the window can open agents.
+M.START_TITLE = "Linear · starting an omp chat…"
+
 -- Create modal ----------------------------------------------------------------
 
 M.PRIORITIES = { { value = 0, label = "No priority" }, { value = 1, label = "Urgent" }, { value = 2, label = "High" }, { value = 3, label = "Medium" }, { value = 4, label = "Low" } }
@@ -405,6 +409,36 @@ function M.cleanRewrite(out: string): string?
 		s = string.match(inner, "^%s*(.-)%s*$") or ""
 	end
 	return if s == "" then nil else s
+end
+
+-- The first message of an omp chat started on `issue`; `description` nil means it could not be loaded.
+function M.startPrompt(issue: any, title: string, stateName: string?, description: string?): string
+	local prio = M.PRIORITIES[1].label
+	for _, p in M.PRIORITIES do
+		if p.value == issue.priority then
+			prio = p.label
+		end
+	end
+	local a = issue.assignee
+	local labels = {}
+	for _, l in (if type(issue.labels) == "table" and type(issue.labels.nodes) == "table" then issue.labels.nodes else {}) do
+		table.insert(labels, l.name)
+	end
+	local desc = if description == nil
+		then "(the description could not be loaded; read it in Linear)"
+		elseif string.match(description, "%S") then description
+		else "(no description)"
+	return "Start working on Linear issue " .. issue.identifier .. ": " .. title .. ".\n\n"
+		.. "Load and follow the `grilling` skill (skill://grilling): interrogate me about the approach before anything is implemented.\n\n"
+		.. "- Identifier: " .. issue.identifier .. "\n"
+		.. "- Title: " .. title .. "\n"
+		.. "- URL: " .. tostring(issue.url) .. "\n"
+		.. "- State: " .. (stateName or "unknown") .. "\n"
+		.. "- Priority: " .. prio .. "\n"
+		.. "- Assignee: " .. (if type(a) == "table" and a.name then a.name else "unassigned") .. "\n"
+		.. "- Labels: " .. (if #labels > 0 then table.concat(labels, ", ") else "none") .. "\n\n"
+		.. "## Description\n\n" .. desc .. "\n\n"
+		.. "Read the relevant code, grill me per the grilling skill, then write the plan. Do not implement anything until I approve the plan."
 end
 
 return M
