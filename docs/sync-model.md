@@ -1,6 +1,6 @@
 # Sync model
 
-How version 0.6.0 keeps the Board in step with Linear.
+How version 0.7.0 keeps the Board in step with Linear.
 
 ## Host and window halves
 
