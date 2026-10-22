@@ -84,8 +84,8 @@
 	}
 
 	& .lt-mine[data-on='true'] {
-		background: rgb(from var(--sf-accent) r g b / 15%);
-		border-color: rgb(from var(--sf-accent) r g b / 50%);
+		background: rgb(from var(--lt-accent) r g b / 15%);
+		border-color: rgb(from var(--lt-accent) r g b / 50%);
 	}
 
 	& .lt-count,
@@ -113,7 +113,7 @@
 
 	& .lt-new:hover {
 		background: rgb(from var(--tv-fg) r g b / 6%);
-		border-color: var(--sf-accent);
+		border-color: var(--lt-accent);
 		color: var(--tv-fg);
 	}
 
@@ -169,8 +169,8 @@
 	}
 
 	& .lt-col[data-drop='true'] {
-		background: rgb(from var(--sf-accent) r g b / 6%);
-		outline: 1px dashed rgb(from var(--sf-accent) r g b / 50%);
+		background: rgb(from var(--lt-accent) r g b / 6%);
+		outline: 1px dashed rgb(from var(--lt-accent) r g b / 50%);
 		cursor: copy;
 	}
 
@@ -235,7 +235,7 @@
 	}
 
 	& .lt-card[data-sel='true'] {
-		border-color: var(--sf-accent);
+		border-color: var(--lt-accent);
 	}
 
 	& .lt-card[data-pending='true'] {
@@ -251,7 +251,7 @@
 	}
 
 	& .lt-card[data-mark='pick'] {
-		border-color: var(--sf-accent);
+		border-color: var(--lt-accent);
 		box-shadow: 0 6px 16px rgb(0 0 0 / 25%);
 		rotate: 1.5deg;
 	}
@@ -337,16 +337,16 @@
 		flex: 0 0 auto;
 		height: 24px;
 		padding: 0 10px;
-		border: 1px solid rgb(from var(--sf-accent) r g b / 50%);
+		border: 1px solid rgb(from var(--lt-accent) r g b / 50%);
 		border-radius: 6px;
 		font-size: 12px;
 		font-weight: 500;
-		color: var(--sf-accent);
+		color: var(--lt-accent);
 		white-space: nowrap;
 	}
 
 	& .lt-start:hover {
-		background: rgb(from var(--sf-accent) r g b / 12%);
+		background: rgb(from var(--lt-accent) r g b / 12%);
 	}
 
 	& .lt-start-icon {
@@ -362,7 +362,7 @@
 		height: 18px;
 		margin-left: 2px;
 		border-radius: 50%;
-		background: rgb(from var(--sf-accent) r g b / 25%);
+		background: rgb(from var(--lt-accent) r g b / 25%);
 		font-size: 9px;
 		font-weight: 600;
 		line-height: 18px;
@@ -394,13 +394,13 @@
 
 	& .lt-rows > [data-role='linear-todo.input'] {
 		padding: 8px 14px 8px 40px;
-		border-bottom: 1px solid var(--sf-accent);
+		border-bottom: 1px solid var(--lt-accent);
 	}
 
 	& .lt-list > [data-role='linear-todo.input'] {
 		padding: 8px 10px;
 		background: var(--sf-card-bg);
-		border: 1px solid var(--sf-accent);
+		border: 1px solid var(--lt-accent);
 		border-radius: 6px;
 	}
 
@@ -559,8 +559,8 @@
 	}
 
 	& .lt-group[data-drop='true'] {
-		background: rgb(from var(--sf-accent) r g b / 6%);
-		outline: 1px dashed rgb(from var(--sf-accent) r g b / 50%);
+		background: rgb(from var(--lt-accent) r g b / 6%);
+		outline: 1px dashed rgb(from var(--lt-accent) r g b / 50%);
 		outline-offset: -1px;
 		cursor: copy;
 	}
@@ -590,8 +590,8 @@
 	}
 
 	& .lt-row[data-sel='true'] {
-		background: rgb(from var(--sf-accent) r g b / 10%);
-		box-shadow: inset 2px 0 0 var(--sf-accent);
+		background: rgb(from var(--lt-accent) r g b / 10%);
+		box-shadow: inset 2px 0 0 var(--lt-accent);
 	}
 
 	& .lt-row[data-picked='true'] {
@@ -607,7 +607,7 @@
 	}
 
 	& .lt-row[data-mark='pick'] {
-		background: rgb(from var(--sf-accent) r g b / 18%);
+		background: rgb(from var(--lt-accent) r g b / 18%);
 	}
 
 	& .lt-row .lt-id {
@@ -636,7 +636,7 @@
 	}
 
 	& .lt-undo-btn {
-		color: var(--sf-accent);
+		color: var(--lt-accent);
 		font-weight: 500;
 	}
 
@@ -807,7 +807,7 @@
 
 	& .lt-more[data-on='true']::before {
 		content: "● ";
-		color: var(--sf-accent);
+		color: var(--lt-accent);
 	}
 
 	& .lt-rewrite {
@@ -824,7 +824,7 @@
 		height: 28px;
 		padding: 0 12px;
 		border-radius: 6px;
-		background: var(--sf-accent);
+		background: var(--lt-accent);
 		color: white;
 		font-size: 12px;
 		font-weight: 600;
@@ -881,7 +881,7 @@
 	}
 
 	& .lt-pop-on {
-		color: var(--sf-accent);
+		color: var(--lt-accent);
 	}
 
 	& .lt-check {
@@ -1129,8 +1129,9 @@
 	pointer-events: auto;
 }
 
-.sf-layer[data-surface='plugin.linear-todo.board'] .lt-scrim + [data-role='linear-todo.modal'] {
-	box-shadow: 0 0 0 100vmax rgb(0 0 0 / 35%);
+/* The New issue modal's scrim dims the board behind it. */
+.sf-layer[data-surface='plugin.linear-todo.board'] .lt-scrim[data-dim='true'] {
+	background: rgb(0 0 0 / 35%);
 }
 
 /* Collapsible columns and List groups */

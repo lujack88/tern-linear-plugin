@@ -597,9 +597,9 @@ function M.kinds(c: Ctx): { Kind }
 	return kinds
 end
 
--- A cover behind the layer's overlays: clicking it runs `action` (closes what is open).
-function M.scrim(action: string): Node
-	return el("div", "scrim", "scrim", { class = "lt-scrim", actions = { click = action } })
+-- A cover behind the layer's overlays: clicking it runs `action` (closes what is open); `dim` shades the board.
+function M.scrim(action: string, dim: boolean?): Node
+	return el("div", "scrim", "scrim", { class = "lt-scrim", attrs = { ["data-dim"] = flag(dim == true) }, actions = { click = action } })
 end
 
 -- The layer's children: the modal, and the open popover anchored to its chip.
@@ -643,7 +643,7 @@ function M.view(d: Draft, c: Ctx): { Node }
 	}))
 	local out: { Node } = {
 		-- A click outside closes the open list, else the modal (its draft is kept).
-		M.scrim(if d.pop then "cm-unpop" else "cm-close"),
+		M.scrim(if d.pop then "cm-unpop" else "cm-close", true),
 		ui.node("overlay", { key = "create", role = ROLE .. "modal", aria = "New issue", size = "lg" }, body),
 	}
 	if d.pop then
