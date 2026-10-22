@@ -1202,7 +1202,8 @@ local function wsAvatar(w: any, key: string): Node
 end
 
 -- Grip, rename, start and cancel: the per-issue controls of a card or row.
-local function controls(state: State, id: string, into: { Node })
+-- Cards pass withStart=false: their ▷ sits at the card's bottom-right instead.
+local function controls(state: State, id: string, into: { Node }, withStart: boolean)
 	local armed = state.confirm == id
 	table.insert(into, el("button", "grip", "grip", {
 		class = "lt-grip",
@@ -1212,7 +1213,9 @@ local function controls(state: State, id: string, into: { Node })
 		actions = { click = "lift=" .. id },
 	}))
 	table.insert(into, el("button", "act", "rename", { class = "lt-act", text = "✎", aria = "Rename", title = "Rename", actions = { click = "rename=" .. id } }))
-	table.insert(into, el("button", "start", "start", { class = "lt-start", text = "▷ Start", aria = "Start in omp", title = "Start in omp", actions = { click = "start=" .. id } }))
+	if withStart then
+		table.insert(into, el("button", "start", "start", { class = "lt-start", text = "▷ Start", aria = "Start in omp", title = "Start in omp", actions = { click = "start=" .. id } }))
+	end
 	table.insert(into, el("button", "act", "cancel", {
 		class = "lt-act lt-del",
 		text = if armed then "Cancel?" else "✕",
@@ -1299,7 +1302,7 @@ local function card(state: State, issue: any, col: Column, liftState: string?): 
 		el("span", "id", "id", { class = "lt-id", text = issue.identifier }),
 		el("span", "spacer", "sp", { class = "lt-spacer" }),
 	}
-	controls(state, id, top)
+	controls(state, id, top, false)
 	local av = avatar(issue)
 	if av then
 		table.insert(top, av)
@@ -1309,6 +1312,14 @@ local function card(state: State, issue: any, col: Column, liftState: string?): 
 		el("span", "state", "state", { class = "lt-state", attrs = { ["data-type"] = col.state.type }, title = col.state.name }),
 	}
 	extras(issue, chips)
+	table.insert(chips, el("span", "spacer", "sp", { class = "lt-spacer" }))
+	table.insert(chips, el("button", "start", "start", {
+		class = "lt-start lt-start-icon",
+		text = "▷",
+		aria = "Start in omp",
+		title = "Start working on this issue in a new omp chat",
+		actions = { click = "start=" .. id },
+	}))
 	return el("div", "card", id, itemProps(state, issue, "lt-card", liftState ~= nil and col.state.id ~= liftState), {
 		el("div", "top", "top", { class = "lt-top" }, top),
 		titleNode(state, issue, col.state.id, title, { h = "2lines" }),
@@ -1329,7 +1340,7 @@ local function row(state: State, issue: any, col: Column, liftState: string?): N
 	if av then
 		table.insert(kids, av)
 	end
-	controls(state, id, kids)
+	controls(state, id, kids, true)
 	return el("div", "row", id, itemProps(state, issue, "lt-row", liftState ~= nil and col.state.id ~= liftState), kids)
 end
 

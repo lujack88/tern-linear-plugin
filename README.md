@@ -142,7 +142,7 @@ untouched keeps the template's own formatting.
 | Action | Key |
 | --- | --- |
 | Rename | click ✎, or `r` / `F2` |
-| Start in omp | click **▷ Start** on a card, a row or in the issue view |
+| Start in omp | click **▷ Start** on a row or in the issue view, or the **▷** at a card's bottom-right |
 
 Start opens a new omp chat in plan mode. Its first message is the issue:
 identifier, title, URL, State, priority, assignee, labels and description. It

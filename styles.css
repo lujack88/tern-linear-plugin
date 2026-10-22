@@ -259,7 +259,7 @@
 		flex-direction: row;
 		align-items: center;
 		gap: 4px;
-		height: 24px;
+		height: 18px;
 	}
 
 	& .lt-id {
@@ -325,6 +325,14 @@
 
 	& .lt-start:hover {
 		background: rgb(from var(--sf-accent) r g b / 12%);
+	}
+
+	& .lt-start-icon {
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		font-size: 13px;
+		text-align: center;
 	}
 
 	& .lt-avatar {
