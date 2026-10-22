@@ -520,12 +520,11 @@ end
 
 -- The workflow closing every Start and Send to chat message; `plan` is what to write ("the plan", "ONE plan covering all of them").
 local function brief(plan: string): string
-	return "How to work this:\n"
-		.. "1. Load the `grill-with-docs` skill (skill://grill-with-docs): read the relevant code, then interrogate me about the approach. Note the decisions for the docs it keeps, and write them once I approve the plan.\n"
-		.. "2. Load the `show-me` skill (skill://show-me) to show me the approach visually, then write " .. plan .. ". Do not implement anything until I approve the plan.\n"
-		.. "3. Once approved, orchestrate: split the work into independent slices and delegate them to subagents, in parallel where they do not depend on each other. Verify each slice's result as it lands. Do the work on a branch and open a PR.\n"
-		.. "4. Before merging, have reviewer subagents review the PR and fix what they find. Then load the `visual-pr` skill (skill://visual-pr) for the PR, and merge it.\n\n"
-		.. "At any step, as soon as you see the work is very complicated or needs human QA, stop, tell me why, and wait for my go-ahead. Never merge such work until I say so."
+	return "Workflow:\n"
+		.. "1. Plan: load skill://grill-with-docs, read the relevant code and grill me on the approach. Then load skill://show-me to show it visually and write " .. plan .. ". Implement nothing until I approve; write the grill-with-docs docs after approval.\n"
+		.. "2. Build: move the Linear issue(s) to In Progress and comment the approved plan on them. Split the work into independent slices for parallel subagents and verify each result. Work on a branch and open a PR.\n"
+		.. "3. Ship: comment the PR link on the Linear issue(s) and move them to In Review (or the team's review state). Have reviewer subagents review the PR and fix their findings, run skill://visual-pr, then merge and comment that it merged. Leave the issue(s) in review.\n\n"
+		.. "If the work is very complicated or needs human QA, stop as soon as you see it, tell me why and wait for my go-ahead; never merge it without my OK."
 end
 
 -- URL, State, Priority, Assignee and Labels of `issue`, one "- " line each; unset ones are left out.

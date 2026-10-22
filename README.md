@@ -202,19 +202,23 @@ Start opens a new omp chat in plan mode. Its first message is the issue:
 identifier, title, URL, State, priority, assignee, labels and description
 (fields the issue leaves unset are left out), then the workflow:
 
-1. grill you about the approach with the `grill-with-docs` skill, noting
-   decisions and writing them to docs once you approve the plan;
-2. show the approach with the `show-me` skill and write the plan, implementing
-   nothing until you approve it;
-3. orchestrate: delegate independent slices to subagents, in parallel, and
-   verify each, working on a branch, opening a PR;
-4. before merging, have reviewer subagents review the PR and fix their
-   findings, load the `visual-pr` skill, then merge.
+1. **Plan**: load skill://grill-with-docs, read the relevant code and grill
+   you on the approach. Then load skill://show-me to show the approach visually
+   and write the plan. Implement nothing until you approve; write the
+   grill-with-docs docs after approval.
+2. **Build**: move the Linear issue(s) to In Progress and comment the approved
+   plan on them. Split the work into independent slices for parallel subagents
+   and verify each result. Work on a branch and open a PR.
+3. **Ship**: comment the PR link on the Linear issue(s) and move them to In
+   Review (or the team's review state). Have reviewer subagents review the PR
+   and fix their findings, run skill://visual-pr, then merge and comment that
+   it merged. Leave the issue(s) in review.
 
-If the work is very complicated or needs human QA, omp is told to stop at any
-step as soon as it sees it, say why, wait for your go-ahead, and never merge
-it until you say so. The skills must be installed where omp finds them. The
-chat runs in the board pane's directory, else your home.
+If the work is very complicated or needs human QA, omp is told to stop as soon
+as it sees it, say why, wait for your go-ahead, and never merge it without your
+OK. The skills must be installed where omp finds them. Linear updates need a
+Linear tool (e.g. the Linear MCP) in that chat. The chat runs in the board
+pane's directory, else your home.
 
 `✕` (or `Delete` pressed twice) cancels an issue: it moves to the team's
 Canceled State. The plugin never deletes issues.

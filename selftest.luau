@@ -281,15 +281,15 @@ local cases: { { name: string, fn: () -> () } } = {
 				Model.contextPrompt({ e }),
 				Model.contextPrompt({ e, e }),
 			}
-			local steps = { "skill://grill-with-docs", "skill://show-me", "Do not implement", "subagents", "reviewer subagents", "skill://visual-pr", "merge it", "human QA", "wait for my go-ahead" }
+			local steps = { "skill://grill-with-docs", "skill://show-me", "Implement nothing until I approve", "In Progress", "subagents", "open a PR", "In Review", "reviewer subagents", "skill://visual-pr", "merge", "Leave the issue(s) in review", "human QA", "wait for my go-ahead" }
 			for i, p in prompts do
 				local at = string.find(p, "Steps here", 1, true) or math.huge
 				for _, want in steps do
 					local s = string.find(p, want, 1, true)
 					check(s ~= nil and s > at, i .. ": " .. want .. " after the issue")
 				end
-				local _, n = string.gsub(p, "grill%-with%-docs", "")
-				check(n == 2, i .. ": brief once")
+				local _, n = string.gsub(p, "Workflow:", "")
+				check(n == 1, i .. ": brief once")
 			end
 		end,
 	},
