@@ -115,6 +115,30 @@ function M.list(cols: { Column }): { any }
 	return out
 end
 
+-- The ids of `list` from `a` to `b` inclusive, in list order either way (a Shift-click range);
+-- just `b` when `a` is not in the list, nothing when `b` is not.
+function M.range(list: { any }, a: string, b: string): { string }
+	local ia: number?, ib: number? = nil, nil
+	for i, x in list do
+		if x.id == a then
+			ia = i
+		end
+		if x.id == b then
+			ib = i
+		end
+	end
+	if not ib then
+		return {}
+	elseif not ia then
+		return { b }
+	end
+	local out: { string } = {}
+	for i = math.min(ia, ib), math.max(ia, ib) do
+		table.insert(out, list[i].id)
+	end
+	return out
+end
+
 -- Index of the column holding `stateId`, or nil.
 function M.columnIndex(cols: { Column }, stateId: string?): number?
 	for i, col in cols do
@@ -209,6 +233,10 @@ end
 -- The board's pane title while it asks the window half to add a workspace: blocks cannot reach
 -- the keychain or open prompts, so the window watches board titles for this one.
 M.ADD_TITLE = "Linear · adding a workspace…"
+
+-- The board's pane title while it asks the window half to start an omp chat on the issue in kv
+-- `linear-todo.start`: only the window can open agents.
+M.START_TITLE = "Linear · starting an omp chat…"
 
 -- Create modal ----------------------------------------------------------------
 
@@ -387,6 +415,54 @@ end
 
 function M.isDate(s: string): boolean
 	return string.match(s, "^%d%d%d%d%-%d%d%-%d%d$") ~= nil
+end
+
+function M.rewritePrompt(title: string, description: string, teamKey: string): string
+	local desc = if string.match(description, "%S") then description else "(empty)"
+	return "Rewrite the description of a Linear issue for team " .. teamKey .. ". Keep every fact, link, name and code snippet; invent nothing.\n"
+		.. "Make it clear and well structured Markdown: a one-line summary, then short sections (## headings) or bullet lists where they help, and an acceptance checklist (- [ ]) when the text implies one.\n"
+		.. "Reply with the new description only: no preamble, no title line, no closing remarks, not wrapped in a code fence.\n\n"
+		.. "Title: " .. title .. "\n\nCurrent description:\n" .. desc
+end
+
+-- The model's reply as a description: trimmed, one wrapping code fence removed; nil when empty.
+function M.cleanRewrite(out: string): string?
+	local s = string.match(out, "^%s*(.-)%s*$") or ""
+	local inner = string.match(s, "^```%w*\n(.-)\n```$")
+	if inner and not string.find(inner, "\n```", 1, true) then
+		s = string.match(inner, "^%s*(.-)%s*$") or ""
+	end
+	return if s == "" then nil else s
+end
+
+-- The first message of an omp chat started on `issue`; `description` nil means it could not be loaded.
+function M.startPrompt(issue: any, title: string, stateName: string?, description: string?): string
+	local prio = M.PRIORITIES[1].label
+	for _, p in M.PRIORITIES do
+		if p.value == issue.priority then
+			prio = p.label
+		end
+	end
+	local a = issue.assignee
+	local labels = {}
+	for _, l in (if type(issue.labels) == "table" and type(issue.labels.nodes) == "table" then issue.labels.nodes else {}) do
+		table.insert(labels, l.name)
+	end
+	local desc = if description == nil
+		then "(the description could not be loaded; read it in Linear)"
+		elseif string.match(description, "%S") then description
+		else "(no description)"
+	return "Start working on Linear issue " .. issue.identifier .. ": " .. title .. ".\n\n"
+		.. "Load and follow the `grilling` skill (skill://grilling): interrogate me about the approach before anything is implemented.\n\n"
+		.. "- Identifier: " .. issue.identifier .. "\n"
+		.. "- Title: " .. title .. "\n"
+		.. "- URL: " .. tostring(issue.url) .. "\n"
+		.. "- State: " .. (stateName or "unknown") .. "\n"
+		.. "- Priority: " .. prio .. "\n"
+		.. "- Assignee: " .. (if type(a) == "table" and a.name then a.name else "unassigned") .. "\n"
+		.. "- Labels: " .. (if #labels > 0 then table.concat(labels, ", ") else "none") .. "\n\n"
+		.. "## Description\n\n" .. desc .. "\n\n"
+		.. "Read the relevant code, grill me per the grilling skill, then write the plan. Do not implement anything until I approve the plan."
 end
 
 return M

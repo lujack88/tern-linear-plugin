@@ -20,6 +20,12 @@ type Column = Model.Column
 type ViewName = "kanban" | "list"
 type Edit = { stateId: string, issueId: string, field: Field.Field }
 type Undo = { label: string, at: number, revert: () -> () }
+-- A Status/Priority/Assignee list over `ids` (the create modal's popover on a Draft of its own),
+-- and the values it opened with, so a pick is told apart from Esc.
+type Choice = { d: Create.Draft, ids: { string }, stateId: string, priority: number, assigneeId: string? }
+-- The context menu of issue `id`, acting on `ids`; `cursor` is the highlighted entry, `armed` the
+-- first click on Cancel, `choice` the Status/Priority/Assignee list drilled into.
+type Menu = { id: string, ids: { string }, cursor: number, armed: boolean, choice: Choice? }
 type State = {
 	cx: BlockCx,
 	-- Bumped when the team changes or the key is withdrawn: callbacks of an older gen are dropped.
@@ -49,6 +55,8 @@ type State = {
 	creating: { [string]: { stateId: string, title: string } },
 	-- The open "New issue" modal, and the choices it offers (fetched when it opens).
 	draft: Create.Draft?,
+	-- A modal closed without creating (Esc or a click outside): reopened as it was, like Linear's draft.
+	kept: Create.Draft?,
 	meta: any?,
 	-- Every workspace's API key by organization id (in memory only), and whether the header's
 	-- workspace switcher is open.
@@ -56,10 +64,21 @@ type State = {
 	switcher: boolean,
 	-- "Add workspace…" was picked: the title asks the window half to run its key prompt.
 	adding: boolean,
+	-- "Start" was clicked: the title asks the window half to open an omp chat on kv `linear-todo.start`.
+	starting: boolean,
 	-- The issue opened from the board (Linear's issue view), drawn instead of the board.
 	detail: Detail.Detail?,
 	view: ViewName,
 	mine: boolean,
+	-- Collapsed columns / List groups by State id (remembered in kv).
+	folded: { [string]: boolean },
+	-- Issues ticked for a bulk edit (not saved), the last one ticked (a Shift-click range starts
+	-- there), and the bulk bar's open Status/Priority/Assignee list.
+	picked: { [string]: boolean },
+	pickAnchor: string?,
+	bulk: Choice?,
+	-- The context menu a click on an issue opens.
+	menu: Menu?,
 }
 
 local function nowSec(): number
@@ -137,6 +156,7 @@ local function remove(state: State, id: string)
 	if i then
 		table.remove(state.issues, i)
 	end
+	state.picked[id] = nil
 end
 
 local function saveCache(state: State)
@@ -160,9 +180,10 @@ end
 
 -- Drops everything tied to the shown issues (on a team change or disconnect).
 local function resetBoard(state: State)
-	state.overlay, state.creating, state.draft, state.meta, state.detail = {}, {}, nil, nil, nil
+	state.overlay, state.creating, state.draft, state.kept, state.meta, state.detail = {}, {}, nil, nil, nil, nil
 	state.sel, state.lift, state.dropState, state.confirm, state.edit, state.undo = nil, nil, nil, nil, nil, nil
 	state.error, state.failures, state.loading, state.fetchedAt = nil, 0, false, nil
+	state.picked, state.pickAnchor, state.bulk, state.menu = {}, nil, nil, nil
 end
 
 local function columnsOf(state: State): { Column }
@@ -223,6 +244,11 @@ local function fetch(state: State, manual: boolean, after: (() -> ())?)
 			end
 			if not find(state, state.lift) then
 				state.lift, state.dropState = nil, nil
+			end
+			for id in state.picked do
+				if not find(state, id) then
+					state.picked[id] = nil
+				end
 			end
 			if manual then
 				state.cx:toast("success", "Linear synced", #issues .. " issues")
@@ -501,7 +527,9 @@ local function openDraft(state: State, stateId: string, template: boolean)
 	if state.edit then
 		endEdit(state, false)
 	end
-	local d = Create.new(stateId, if state.mine then s.viewerId else nil)
+	-- A kept draft comes back whole (its own State included).
+	local d = state.kept or Create.new(stateId, if state.mine then s.viewerId else nil)
+	state.kept, d.pop, d.error = nil, nil, nil
 	state.draft, state.lift, state.dropState, state.confirm, state.switcher = d, nil, nil, nil, false
 	if template then
 		Create.openPop(d, "template", state.cx)
@@ -511,8 +539,13 @@ local function openDraft(state: State, stateId: string, template: boolean)
 	loadMeta(state)
 end
 
-local function closeDraft(state: State)
+-- Closes the modal; `keep` holds on to what was typed for the next open.
+local function closeDraft(state: State, keep: boolean)
+	local d = state.draft
 	state.draft = nil
+	if keep and d and (d.title.text ~= "" or d.desc.text ~= "") then
+		state.kept = d
+	end
 	state.cx:frame({ { "focus", tern.json.null } })
 end
 
@@ -537,7 +570,7 @@ local function submitDraft(state: State)
 	if d.more then
 		Create.again(d, state.cx)
 	else
-		closeDraft(state)
+		closeDraft(state, false)
 	end
 	Linear.create(key, input, function(issue: any?, cerr: string?)
 		state.creating[tmp] = nil
@@ -566,6 +599,51 @@ local function submitDraft(state: State)
 	end)
 end
 
+-- Rewrites the draft's description with omp's default model; never logs the prompt or reply.
+local function rewriteDraft(state: State, d: Create.Draft)
+	if d.rewriting then
+		return
+	end
+	if not string.find(d.title.text, "%S") and not string.find(d.desc.text, "%S") then
+		d.error = "Write a title or description first"
+		return
+	end
+	local sent = d.desc.text
+	d.rewriting, d.error = true, nil
+	state.cx:render()
+	local argv = {
+		"omp", "-p", "--no-session", "--no-tools", "--no-skills", "--no-rules", "--no-extensions",
+		Model.rewritePrompt(d.title.text, sent, (setupOf() or {}).teamKey or ""),
+	}
+	local ok, err = pcall(tern.process.run, argv, { timeout_ms = 120000 }, function(res: any)
+		d.rewriting = false
+		-- A late reply for a draft that was created or cleared meanwhile is dropped.
+		if not alive(state.cx.pane) or (d ~= state.draft and d ~= state.kept) then
+			return
+		end
+		local text = Model.cleanRewrite(res.stdout or "")
+		if res.timed_out then
+			d.error = "Rewrite timed out"
+		elseif res.status ~= 0 then
+			local line = string.match(string.match(res.stderr or "", "^%s*(.-)%s*$") or "", "^[^\r\n]+")
+			d.error = "Rewrite failed: " .. (line or ("omp exited " .. tostring(res.status)))
+		elseif not text then
+			d.error = "Rewrite returned nothing"
+		elseif d.desc.text ~= sent then
+			d.error = "Description changed while rewriting; try again"
+		else
+			d.beforeRewrite, d.rewritten = sent, text
+			Field.reset(d.desc, text)
+		end
+		state.cx:render()
+	end)
+	if not ok then
+		d.rewriting = false
+		d.error = "Could not start omp: " .. tostring(err)
+		state.cx:render()
+	end
+end
+
 -- The undo step, while it is still offered.
 local function fresh(state: State): Undo?
 	local u = state.undo
@@ -592,7 +670,7 @@ local function openDetail(state: State, id: string)
 	end
 	local stateId, title = Model.effective(issue, state.overlay)
 	local dt = Detail.new(issue, stateId or issue.state.id, title)
-	state.detail, state.sel, state.lift, state.dropState, state.confirm, state.switcher = dt, id, nil, nil, nil, false
+	state.detail, state.sel, state.lift, state.dropState, state.confirm, state.switcher, state.menu = dt, id, nil, nil, nil, false, nil
 	state.cx:frame({ { "focus", tern.json.null } })
 	if not state.meta then
 		loadMeta(state)
@@ -614,6 +692,37 @@ end
 local function closeDetail(state: State)
 	state.detail = nil
 	state.cx:frame({ { "focus", tern.json.null } })
+end
+
+-- Hands issue `id` to the window half, which opens an omp chat on it (Model.START_TITLE).
+local function startAgent(state: State, id: string)
+	local issue = find(state, id)
+	if not issue then
+		return
+	end
+	local key = state.key
+	if not key or not setupOf() then
+		state.cx:toast("error", "No Linear workspace yet", "Run Linear: add workspace")
+		return
+	end
+	local stateId, title = Model.effective(issue, state.overlay)
+	local st = Model.stateById(state.states, stateId)
+	local function go(description: string?)
+		kvSet("linear-todo.start", Model.startPrompt(issue, title, st and st.name, description))
+		state.starting = true
+		state.cx:render()
+	end
+	state.cx:toast("info", "Starting " .. issue.identifier .. " in omp…")
+	local dt = state.detail
+	if dt and dt.id == id and dt.info then
+		go(if type(dt.info.description) == "string" then dt.info.description else "")
+		return
+	end
+	Linear.detail(key, id, function(info: any?)
+		if alive(state.cx.pane) then
+			go(if not info then nil elseif type(info.description) == "string" then info.description else "")
+		end
+	end)
 end
 
 -- j / k: the next or previous issue in the board's own order.
@@ -743,10 +852,341 @@ local function runDetail(state: State, dt: Detail.Detail, intent: Detail.Intent)
 		if issue and type(issue.url) == "string" then
 			state.cx:open(issue.url)
 		end
+	elseif intent == "start" then
+		startAgent(state, dt.id)
 	end
 end
 
+-- Selection -----------------------------------------------------------------
+
+-- state.confirm while the bulk bar's "Cancel N?" awaits its second click (issue ids never clash).
+local BULK = "bulk"
+-- Node path of the bulk bar; its lists hang under its buttons.
+local BULK_BAR = "dock.bulk"
+-- A list's Draft holds these, for several issues, until Create.choose writes the pick over one of them.
+local UNSET_STATE, UNSET_PERSON, UNSET_PRIORITY = "", "?", -1
+
+type BulkKind = "status" | "priority" | "assignee"
+-- One issue's write in a bulk edit, and what puts it back (`backState`: the State to show meanwhile).
+type Step = { id: string, ov: Overlay, input: any, back: any, backState: string? }
+
+local function orNull(v: any): any
+	return if v == nil then tern.json.null else v
+end
+
+-- The ticked issues the board shows, in its order.
+local function pickedIds(state: State): { string }
+	local out: { string } = {}
+	for _, issue in Model.list(columnsOf(state)) do
+		if state.picked[issue.id] then
+			table.insert(out, issue.id)
+		end
+	end
+	return out
+end
+
+-- Ticks or unticks `id`; `range` ticks every issue from the last one ticked to `id`, in board order.
+local function pick(state: State, id: string, range: boolean)
+	if not find(state, id) then
+		return
+	end
+	local from = state.pickAnchor
+	if range and from then
+		for _, r in Model.range(Model.list(columnsOf(state)), from, id) do
+			state.picked[r] = true
+		end
+	elseif state.picked[id] then
+		state.picked[id] = nil
+	else
+		state.picked[id] = true
+	end
+	state.pickAnchor, state.bulk = id, nil
+	if state.confirm == BULK then
+		state.confirm = nil
+	end
+end
+
+local function unpick(state: State)
+	state.picked, state.pickAnchor, state.bulk = {}, nil, nil
+	if state.confirm == BULK then
+		state.confirm = nil
+	end
+end
+
+-- Writes every step through `push`, then offers one undo for the ones that landed.
+local function pushAll(state: State, steps: { Step }, verb: string, did: string)
+	local left, landed = #steps, {} :: { Step }
+	local function settle()
+		left -= 1
+		local n = #landed
+		if left == 0 and n > 0 then
+			offer(state, did .. " " .. n .. (if n == 1 then " issue" else " issues"), function()
+				for _, s in landed do
+					push(state, s.id, if s.backState then { stateId = s.backState } else overlayFor(state, s.id), s.back, "Undo")
+				end
+			end)
+		end
+	end
+	for _, s in steps do
+		push(state, s.id, s.ov, s.input, verb, function()
+			table.insert(landed, s)
+			settle()
+		end, settle)
+	end
+end
+
+-- Sets `kind` to `value` (a Create option id: a State id, "0"–"4", a user id or "none") on every
+-- issue of `ids` it changes, with one undo for all of them.
+local function applyMany(state: State, ids: { string }, kind: BulkKind, value: string)
+	local steps: { Step } = {}
+	for _, id in ids do
+		local issue = find(state, id)
+		if not issue then
+			continue
+		end
+		if kind == "status" then
+			local prevId = issue.state.id
+			if Model.effective(issue, state.overlay) ~= value and Model.stateById(state.states, value) then
+				table.insert(steps, { id = id, ov = { stateId = value }, input = { stateId = value }, back = { stateId = prevId }, backState = prevId })
+			end
+		elseif kind == "priority" then
+			local prev, to = if type(issue.priority) == "number" then issue.priority else 0, tonumber(value) or 0
+			if prev ~= to then
+				table.insert(steps, { id = id, ov = overlayFor(state, id), input = { priority = to }, back = { priority = prev } })
+			end
+		else
+			local prev = if type(issue.assignee) == "table" then issue.assignee.id else nil
+			local to = if value == "none" then nil else value
+			if prev ~= to then
+				table.insert(steps, { id = id, ov = overlayFor(state, id), input = { assigneeId = orNull(to) }, back = { assigneeId = orNull(prev) } })
+			end
+		end
+	end
+	pushAll(state, steps, "Update", "Updated")
+end
+
+-- Cancels every issue of `ids`, as ✕ does one, with one undo for all of them.
+local function cancelMany(state: State, ids: { string })
+	local cancelId = Model.cancelState(state.states)
+	if not cancelId then
+		state.cx:toast("error", "Cancel failed", "This team has no canceled state")
+		return
+	end
+	local steps: { Step } = {}
+	for _, id in ids do
+		local issue = find(state, id)
+		if issue then
+			local prevId = issue.state.id
+			table.insert(steps, { id = id, ov = { gone = true }, input = { stateId = cancelId }, back = { stateId = prevId }, backState = prevId })
+		end
+	end
+	pushAll(state, steps, "Cancel", "Canceled")
+end
+
+-- Opens a Status/Priority/Assignee list for `ids`: the create modal's popover on a Draft of its own,
+-- anchored under `anchor`'s `kind` child. One issue's own value is checked, as in Linear.
+local function openChoice(state: State, ids: { string }, kind: BulkKind, anchor: string, cx: BlockCx): Choice
+	local d = Create.new(UNSET_STATE, UNSET_PERSON)
+	d.root, d.anchor, d.priority = anchor, anchor, UNSET_PRIORITY
+	local one = if #ids == 1 then find(state, ids[1]) else nil
+	if one then
+		d.stateId = Model.effective(one, state.overlay) or UNSET_STATE
+		d.priority = if type(one.priority) == "number" then one.priority else 0
+		d.assigneeId = if type(one.assignee) == "table" then one.assignee.id else nil
+	end
+	Create.openPop(d, kind, cx)
+	if kind == "assignee" and not state.meta then
+		loadMeta(state)
+	end
+	return { d = d, ids = ids, stateId = d.stateId, priority = d.priority, assigneeId = d.assigneeId }
+end
+
+-- Once the list closed, writes what was picked in it (nothing after Esc or a click outside);
+-- false while it is still open.
+local function takeChoice(state: State, c: Choice): boolean
+	local d = c.d
+	if d.pop then
+		return false
+	end
+	if d.stateId ~= c.stateId then
+		applyMany(state, c.ids, "status", d.stateId)
+	elseif d.priority ~= c.priority then
+		applyMany(state, c.ids, "priority", tostring(d.priority))
+	elseif d.assigneeId ~= c.assigneeId then
+		applyMany(state, c.ids, "assignee", d.assigneeId or "none")
+	end
+	return true
+end
+
+-- Context menu ----------------------------------------------------------------
+
+type Item = { key: string, text: string?, hint: string?, sub: boolean?, danger: boolean? }
+
+local SEP: Item = { key = "sep" }
+
+-- The node path of the row or card the menu hangs under.
+local function menuAnchor(state: State, m: Menu): string
+	return listPath(state, stateIdOf(state, m.id) or "") .. "." .. m.id
+end
+
+-- The menu's entries; several issues get only what applies to all of them.
+local function menuItems(m: Menu): { Item }
+	local n = #m.ids
+	local cancelText = if n > 1 then "Cancel " .. n .. " issues" else "Cancel issue"
+	local items: { Item } = {
+		{ key = "status", text = "Status", sub = true },
+		{ key = "priority", text = "Priority", sub = true },
+		{ key = "assignee", text = "Assignee", sub = true },
+		SEP,
+	}
+	if n == 1 then
+		table.insert(items, { key = "open", text = "Open issue", hint = "Enter" })
+		table.insert(items, { key = "start", text = "▷ Start in omp" })
+		table.insert(items, { key = "web", text = "Open in Linear" })
+		table.insert(items, { key = "copy-id", text = "Copy ID" })
+		table.insert(items, { key = "copy-link", text = "Copy link" })
+		table.insert(items, SEP)
+		table.insert(items, { key = "rename", text = "Rename", hint = "R" })
+	else
+		table.insert(items, { key = "copy-id", text = "Copy IDs" })
+		table.insert(items, SEP)
+	end
+	table.insert(items, { key = "cancel", text = if m.armed then cancelText .. "?" else cancelText, hint = "Del", danger = true })
+	return items
+end
+
+-- Opens the menu on issue `id`: on the whole selection when `id` is ticked, else on `id` alone.
+local function openMenu(state: State, id: string)
+	if not find(state, id) then
+		return
+	end
+	local ids = if state.picked[id] then pickedIds(state) else { id }
+	state.menu, state.sel, state.confirm = { id = id, ids = ids, cursor = 1, armed = false }, id, nil
+end
+
+-- Closes the menu, taking the caret out of its list's search field.
+local function closeMenu(state: State)
+	local m = state.menu
+	state.menu = nil
+	if m and m.choice then
+		Create.closePop(m.choice.d, state.cx)
+	end
+end
+
+-- From the list back to the menu's entries.
+local function menuBack(m: Menu, cx: BlockCx)
+	if m.choice then
+		Create.closePop(m.choice.d, cx)
+		m.choice = nil
+	end
+end
+
+-- Runs entry `key` of the menu.
+local function runItem(state: State, m: Menu, key: string, cx: BlockCx)
+	local issue = find(state, m.id)
+	if not issue then
+		closeMenu(state)
+		return
+	end
+	if key == "status" or key == "priority" or key == "assignee" then
+		m.choice = openChoice(state, m.ids, key :: BulkKind, menuAnchor(state, m), cx)
+		return
+	elseif key == "cancel" and not m.armed then
+		m.armed = true
+		return
+	end
+	closeMenu(state)
+	if key == "open" then
+		openDetail(state, m.id)
+	elseif key == "start" then
+		startAgent(state, m.id)
+	elseif key == "web" and type(issue.url) == "string" then
+		cx:open(issue.url)
+	elseif key == "copy-id" then
+		local idents: { string } = {}
+		for _, id in m.ids do
+			local it = find(state, id)
+			if it then
+				table.insert(idents, it.identifier)
+			end
+		end
+		cx:copy(table.concat(idents, ", "))
+		cx:toast("success", "Copied " .. table.concat(idents, ", "))
+	elseif key == "copy-link" and type(issue.url) == "string" then
+		cx:copy(issue.url)
+		cx:toast("success", "Copied the link to " .. issue.identifier)
+	elseif key == "rename" then
+		startRename(state, m.id)
+	elseif key == "cancel" then
+		if #m.ids == 1 then
+			cancel(state, m.id)
+		else
+			cancelMany(state, m.ids)
+			unpick(state)
+		end
+	end
+end
+
+-- A key while the menu is open; it takes every key, so nothing acts on the board behind it.
+local function menuKey(state: State, m: Menu, k: Key, cx: BlockCx): boolean
+	local name = k.name
+	local c = m.choice
+	if c then
+		local pop = c.d.pop
+		if name == "left" or (name == "backspace" and pop and pop.q.text == "") then
+			menuBack(m, cx)
+			return true
+		end
+		Create.popKey(c.d, k, ctxOf(state), cx)
+		if takeChoice(state, c) then
+			closeMenu(state)
+		end
+		return true
+	end
+	local items = menuItems(m)
+	if name == "escape" then
+		closeMenu(state)
+	elseif name == "up" or name == "k" or name == "down" or name == "j" then
+		local dir = if name == "up" or name == "k" then -1 else 1
+		local i = m.cursor + dir
+		while items[i] and items[i].key == "sep" do
+			i += dir
+		end
+		if items[i] then
+			m.cursor = i
+		end
+	elseif name == "enter" or name == "right" then
+		local it = items[m.cursor]
+		if it and (name == "enter" or it.sub) then
+			runItem(state, m, it.key, cx)
+		end
+	end
+	return true
+end
+
 -- Actions -------------------------------------------------------------------
+
+-- Where `c` creates: the selected issue's column, else the first unstarted one, else the first.
+local function defaultColumn(cols: { Column }, selIdx: number?): Column?
+	if selIdx then
+		return cols[selIdx]
+	end
+	for _, col in cols do
+		if col.state.type == "unstarted" then
+			return col
+		end
+	end
+	return cols[1]
+end
+
+-- Keys skip collapsed columns and groups, as if they were empty.
+local function keyColumns(state: State): ({ Column }, number?)
+	local cols: { Column } = {}
+	for _, col in columnsOf(state) do
+		table.insert(cols, if state.folded[col.state.id] then { state = col.state, issues = {} } else col)
+	end
+	return cols, if visible(cols, state.sel) then Model.columnIndex(cols, stateIdOf(state, state.sel)) else nil
+end
 
 local function act(state: State, name: string, value: string, cx: BlockCx)
 	local d = state.draft
@@ -755,7 +1195,9 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		if r == "submit" then
 			submitDraft(state)
 		elseif r == "close" then
-			closeDraft(state)
+			closeDraft(state, true)
+		elseif r == "rewrite" then
+			rewriteDraft(state, d)
 		end
 		return
 	end
@@ -774,6 +1216,34 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		saveProps(state, dt, before)
 		return
 	end
+	local b = state.bulk
+	if b and string.sub(name, 1, 3) == "cm-" then
+		Create.act(b.d, name, value, ctxOf(state), cx)
+		if takeChoice(state, b) then
+			state.bulk = nil
+		end
+		return
+	end
+	local m = state.menu
+	if m then
+		local c = m.choice
+		if c and string.sub(name, 1, 3) == "cm-" then
+			Create.act(c.d, name, value, ctxOf(state), cx)
+			if takeChoice(state, c) then
+				closeMenu(state)
+			end
+			return
+		elseif name == "menu-run" then
+			runItem(state, m, value, cx)
+			return
+		elseif name == "menu-back" then
+			menuBack(m, cx)
+			return
+		elseif name == "menu-close" then
+			closeMenu(state)
+			return
+		end
+	end
 	if name ~= "ws-pop" then
 		state.switcher = false
 	end
@@ -787,6 +1257,12 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		return
 	elseif name == "ws-added" then
 		state.adding = false
+		return
+	elseif name == "started" then
+		state.starting = false
+		return
+	elseif name == "start" then
+		startAgent(state, value)
 		return
 	elseif name == "ws" then
 		switchTo(state, value)
@@ -805,6 +1281,10 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			return
 		end
 		state.confirm = nil
+		openMenu(state, value)
+	elseif name == "open" then
+		-- A double click: the first click opened the menu.
+		state.menu = nil
 		openDetail(state, value)
 	elseif name == "lift" then
 		if state.lift == value then
@@ -821,6 +1301,12 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		state.lift, state.dropState = nil, nil
 	elseif name == "add" then
 		openDraft(state, value, false)
+	elseif name == "new" then
+		-- The header button: same State as `c`.
+		local col = defaultColumn(keyColumns(state))
+		if col then
+			openDraft(state, col.state.id, false)
+		end
 	elseif name == "rename" then
 		startRename(state, value)
 	elseif name == "cancel" then
@@ -830,6 +1316,25 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			cancel(state, value)
 		else
 			state.confirm = value
+		end
+	elseif name == "pick" or name == "pick-range" then
+		pick(state, value, name == "pick-range")
+	elseif name == "unpick" then
+		unpick(state)
+	elseif name == "bulk-pop" then
+		if state.confirm == BULK then
+			state.confirm = nil
+		end
+		if value == "status" or value == "priority" or value == "assignee" then
+			state.bulk = openChoice(state, pickedIds(state), value :: BulkKind, BULK_BAR, cx)
+		end
+	elseif name == "bulk-cancel" then
+		if state.confirm == BULK then
+			state.confirm = nil
+			cancelMany(state, pickedIds(state))
+			unpick(state)
+		else
+			state.confirm = BULK
 		end
 	elseif name == "undo" then
 		local u = fresh(state)
@@ -845,12 +1350,25 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			state.view, state.edit = value, nil
 			kvSet("linear-todo.view", value)
 		end
+	elseif name == "fold" then
+		if state.folded[value] then
+			state.folded[value] = nil
+		else
+			state.folded[value] = true
+		end
+		kvSet("linear-todo.folded", state.folded)
+		return
 	elseif name == "mine" then
 		state.mine = not state.mine
 		kvSet("linear-todo.mine", state.mine)
 		local cols = columnsOf(state)
 		if not visible(cols, state.sel) then
 			state.sel, state.confirm = nil, nil
+		end
+		for id in state.picked do
+			if not visible(cols, id) then
+				state.picked[id] = nil
+			end
 		end
 	end
 end
@@ -867,19 +1385,6 @@ local function nextFilled(cols: { Column }, from: number, dir: number): Column?
 	return nil
 end
 
--- Where `c` creates: the selected issue's column, else the first unstarted one, else the first.
-local function defaultColumn(cols: { Column }, selIdx: number?): Column?
-	if selIdx then
-		return cols[selIdx]
-	end
-	for _, col in cols do
-		if col.state.type == "unstarted" then
-			return col
-		end
-	end
-	return cols[1]
-end
-
 local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 	local d = state.draft
 	if d then
@@ -888,7 +1393,7 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 			submitDraft(state)
 			return true
 		elseif r == "close" then
-			closeDraft(state)
+			closeDraft(state, true)
 			return true
 		end
 		return r :: boolean
@@ -902,6 +1407,18 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		end
 		saveProps(state, dt, before)
 		return r ~= false
+	end
+	local b = state.bulk
+	if b then
+		local used = Create.popKey(b.d, k, ctxOf(state), cx)
+		if takeChoice(state, b) then
+			state.bulk = nil
+		end
+		return used
+	end
+	local m = state.menu
+	if m then
+		return menuKey(state, m, k, cx)
 	end
 	if state.switcher then
 		local n = tonumber(k.name)
@@ -940,8 +1457,7 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		act(state, "undo", "", cx)
 		return true
 	end
-	local cols = columnsOf(state)
-	local selIdx = if visible(cols, state.sel) then Model.columnIndex(cols, stateIdOf(state, state.sel)) else nil
+	local cols, selIdx = keyColumns(state)
 	if k.alt and not mod and name == "c" then
 		-- Linear's "create from template".
 		local col = defaultColumn(cols, selIdx)
@@ -1023,7 +1539,9 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		end
 		return true
 	elseif name == "escape" then
-		if state.lift then
+		if next(state.picked) ~= nil then
+			unpick(state)
+		elseif state.lift then
 			state.lift, state.dropState = nil, nil
 		elseif state.confirm then
 			state.confirm = nil
@@ -1033,8 +1551,14 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 			return false
 		end
 		return true
+	elseif name == "m" and state.sel and find(state, state.sel) then
+		openMenu(state, state.sel)
+		return true
 	elseif (name == "r" or name == "f2") and state.sel then
 		act(state, "rename", state.sel, cx)
+		return true
+	elseif name == "x" and state.sel then
+		act(state, "pick", state.sel, cx)
 		return true
 	elseif name == "c" then
 		local col = defaultColumn(cols, selIdx)
@@ -1080,8 +1604,9 @@ local function wsAvatar(w: any, key: string): Node
 	return el("span", "ws-avatar", key, { class = "lt-ws-avatar", attrs = { ["data-c"] = colours[sum % #colours + 1] }, text = Model.initials(w.orgName) })
 end
 
--- Grip, rename and cancel: the per-issue controls of a card or row.
-local function controls(state: State, id: string, into: { Node })
+-- Grip, rename, start and cancel: the per-issue controls of a card or row.
+-- Cards pass withStart=false: their ▷ sits at the card's bottom-right instead.
+local function controls(state: State, id: string, into: { Node }, withStart: boolean)
 	local armed = state.confirm == id
 	table.insert(into, el("button", "grip", "grip", {
 		class = "lt-grip",
@@ -1091,6 +1616,9 @@ local function controls(state: State, id: string, into: { Node })
 		actions = { click = "lift=" .. id },
 	}))
 	table.insert(into, el("button", "act", "rename", { class = "lt-act", text = "✎", aria = "Rename", title = "Rename", actions = { click = "rename=" .. id } }))
+	if withStart then
+		table.insert(into, el("button", "start", "start", { class = "lt-start", text = "▷ Start", aria = "Start in omp", title = "Start in omp", actions = { click = "start=" .. id } }))
+	end
 	table.insert(into, el("button", "act", "cancel", {
 		class = "lt-act lt-del",
 		text = if armed then "Cancel?" else "✕",
@@ -1153,6 +1681,20 @@ local function titleNode(state: State, issue: any, stateId: string, title: strin
 	return el("div", "title", "title", { class = "lt-title", text = title, max = max })
 end
 
+-- The tick box at an issue's left edge: shown on hover, and on every issue while any is ticked.
+local function pickBox(state: State, id: string): Node
+	return el("input", "pick", "pick", {
+		type = "checkbox",
+		name = "pick",
+		value = id,
+		checked = state.picked[id] == true,
+		class = "lt-pick",
+		aria = "Select issue",
+		title = "Select (x) · Shift-click selects a range",
+		attrs = { ["data-show"] = flag(next(state.picked) ~= nil) },
+	})
+end
+
 -- Props shared by a card and a row: selection, pending and drop marks, click and open.
 local function itemProps(state: State, issue: any, class: string, dropHere: boolean): { [string]: any }
 	local id = issue.id
@@ -1163,10 +1705,11 @@ local function itemProps(state: State, issue: any, class: string, dropHere: bool
 			["data-confirm"] = flag(state.confirm == id),
 			["data-pending"] = flag(state.overlay[id] ~= nil),
 			["data-drop"] = flag(dropHere),
+			["data-picked"] = flag(state.picked[id] == true),
 		},
 		mark = if state.lift == id then "pick" else nil,
 		title = issue.url,
-		actions = { click = "sel=" .. id },
+		actions = { click = "sel=" .. id, dblclick = "open=" .. id },
 	}
 end
 
@@ -1174,10 +1717,11 @@ local function card(state: State, issue: any, col: Column, liftState: string?): 
 	local id = issue.id
 	local _, title = Model.effective(issue, state.overlay)
 	local top: { Node } = {
+		pickBox(state, id),
 		el("span", "id", "id", { class = "lt-id", text = issue.identifier }),
 		el("span", "spacer", "sp", { class = "lt-spacer" }),
 	}
-	controls(state, id, top)
+	controls(state, id, top, false)
 	local av = avatar(issue)
 	if av then
 		table.insert(top, av)
@@ -1187,6 +1731,14 @@ local function card(state: State, issue: any, col: Column, liftState: string?): 
 		el("span", "state", "state", { class = "lt-state", attrs = { ["data-type"] = col.state.type }, title = col.state.name }),
 	}
 	extras(issue, chips)
+	table.insert(chips, el("span", "spacer", "sp", { class = "lt-spacer" }))
+	table.insert(chips, el("button", "start", "start", {
+		class = "lt-start lt-start-icon",
+		text = "▷",
+		aria = "Start in omp",
+		title = "Start working on this issue in a new omp chat",
+		actions = { click = "start=" .. id },
+	}))
 	return el("div", "card", id, itemProps(state, issue, "lt-card", liftState ~= nil and col.state.id ~= liftState), {
 		el("div", "top", "top", { class = "lt-top" }, top),
 		titleNode(state, issue, col.state.id, title, { h = "2lines" }),
@@ -1198,6 +1750,7 @@ local function row(state: State, issue: any, col: Column, liftState: string?): N
 	local id = issue.id
 	local _, title = Model.effective(issue, state.overlay)
 	local kids: { Node } = {
+		pickBox(state, id),
 		prio(issue),
 		el("span", "id", "id", { class = "lt-id", text = issue.identifier }),
 		titleNode(state, issue, col.state.id, title, nil),
@@ -1207,7 +1760,7 @@ local function row(state: State, issue: any, col: Column, liftState: string?): N
 	if av then
 		table.insert(kids, av)
 	end
-	controls(state, id, kids)
+	controls(state, id, kids, true)
 	return el("div", "row", id, itemProps(state, issue, "lt-row", liftState ~= nil and col.state.id ~= liftState), kids)
 end
 
@@ -1224,22 +1777,33 @@ local function column(state: State, col: Column, liftState: string?, list: boole
 			}))
 		end
 	end
-	for _, issue in col.issues do
+	local folded = state.folded[stateId] == true
+	local shown: { any } = if folded then {} else col.issues
+	for _, issue in shown do
 		table.insert(items, if list then row(state, issue, col, liftState) else card(state, issue, col, liftState))
 	end
-	if #items == 0 and not list then
+	if #items == 0 and not list and not folded then
 		table.insert(items, el("div", "none", "empty", { class = "lt-none", text = "No issues" }))
 	end
 	local lifted = liftState ~= nil
 	return el("div", if list then "group" else "col", stateId, {
 		class = if list then "lt-group" else "lt-col",
 		attrs = {
+			["data-folded"] = flag(folded),
 			["data-drop"] = flag(lifted and stateId ~= liftState),
 			["data-target"] = flag(lifted and stateId == state.dropState),
 		},
 		actions = if lifted then { click = "drop=" .. stateId } else nil,
 	}, {
 		el("div", "col-head", "head", { class = "lt-col-head" }, {
+			el("button", "fold", "fold", {
+				class = "lt-fold",
+				text = if folded then "▸" else "▾",
+				aria = if folded then "Expand " .. col.state.name else "Collapse " .. col.state.name,
+				title = if folded then "Expand" else "Collapse",
+				attrs = { ["aria-expanded"] = if folded then "false" else "true" },
+				actions = { click = "fold=" .. stateId },
+			}),
 			el("span", "state", "icon", { class = "lt-state", attrs = { ["data-type"] = col.state.type } }),
 			el("span", "col-title", "label", { class = "lt-col-title", text = col.state.name }),
 			el("span", "col-count", "count", { class = "lt-col-count", text = tostring(#col.issues) }),
@@ -1287,6 +1851,7 @@ local function header(state: State, count: number): { Node }
 			}),
 			el("span", "count", "count", { class = "lt-count", text = tostring(count) }),
 			el("span", "spacer", "sp", { class = "lt-spacer" }),
+			el("button", "new", "new", { class = "lt-new", text = "+ New issue", aria = "New issue", title = "New issue (c)", actions = { click = "new" } }),
 			status,
 			el("button", "refresh", "sync", { class = "lt-refresh", text = "↻", aria = "Sync now", title = "Sync now", actions = { click = "sync" } }),
 		}),
@@ -1327,30 +1892,96 @@ local function switcher(state: State): Node
 	} :: any
 end
 
+-- The bulk bar: how many issues are ticked, their Status/Priority/Assignee lists, cancel and clear.
+local function bulkBar(state: State, n: number): Node
+	local armed = state.confirm == BULK
+	local open = state.bulk and state.bulk.d.pop and state.bulk.d.pop.kind
+	local function list(kind: BulkKind, text: string): Node
+		return el("button", "bulk-btn", kind, {
+			class = "lt-bulk-btn",
+			text = text .. " ▾",
+			attrs = { ["data-open"] = flag(open == kind) },
+			actions = { click = "bulk-pop=" .. kind },
+		})
+	end
+	return el("div", "bulk", "bulk", { class = "lt-bulk" }, {
+		el("span", "bulk-count", "count", { class = "lt-bulk-count", text = n .. " selected" }),
+		list("status", "Status"),
+		list("priority", "Priority"),
+		list("assignee", "Assignee"),
+		el("button", "bulk-btn", "cancel", {
+			class = "lt-bulk-btn lt-del",
+			text = if armed then "Cancel " .. n .. "?" else "Cancel issues",
+			title = if armed then "Click again to cancel " .. n .. (if n == 1 then " issue" else " issues") else "Move the selected issues to Canceled",
+			attrs = { ["data-confirm"] = flag(armed) },
+			actions = { click = "bulk-cancel" },
+		}),
+		el("span", "spacer", "sp", { class = "lt-spacer" }),
+		el("button", "bulk-btn", "clear", { class = "lt-bulk-btn", text = "×", aria = "Clear selection", title = "Clear selection (Esc)", actions = { click = "unpick" } }),
+	})
+end
+
+-- The context menu under its row or card: its entries, or the list drilled into with a Back row.
+local function menuView(state: State, m: Menu): Node
+	local at = menuAnchor(state, m)
+	local c = m.choice
+	if c then
+		return Create.popover(c.d, ctxOf(state), at, el("button", "pop-row", "back", { class = "lt-pop-row lt-menu-back", text = "‹ Back", actions = { click = "menu-back" } }))
+	end
+	local issue = find(state, m.id)
+	local rows: { Node } = {
+		el("div", "ws-section", "title", { class = "lt-ws-section", text = if #m.ids > 1 then #m.ids .. " issues" else (issue and issue.identifier or "") }),
+	}
+	for i, it in menuItems(m) do
+		if it.key == "sep" then
+			table.insert(rows, el("div", "menu-sep", "sep" .. i, { class = "lt-menu-sep" }))
+			continue
+		end
+		local kids: { Node } = { el("span", "pop-label", "label", { class = "lt-pop-label", text = it.text }) }
+		if it.hint or it.sub then
+			table.insert(kids, el("span", "pop-hint", "hint", { class = "lt-pop-hint", text = if it.sub then "▸" else it.hint }))
+		end
+		table.insert(rows, el("button", "pop-row", it.key, {
+			class = "lt-pop-row",
+			attrs = { ["data-cursor"] = flag(i == m.cursor), ["data-danger"] = flag(it.danger == true), ["data-confirm"] = flag(it.key == "cancel" and m.armed) },
+			actions = { click = "menu-run=" .. it.key },
+		}, kids))
+	end
+	return {
+		k = "overlay",
+		p = { key = "menu", role = ROLE .. "menu", aria = "Issue actions", anchor = { node = at, side = "below" }, size = "sm" },
+		c = { el("div", "pop-list", "list", { class = "lt-pop-list" }, rows) },
+	} :: any
+end
+
+-- A hint or the undo offer, then the bulk bar while issues are ticked (not over the issue view).
 local function dock(state: State): Node?
 	local function ident(id: string?): string
 		local issue = find(state, id)
 		return if issue then issue.identifier else "issue"
 	end
-	local kid: Node
-	if state.confirm then
+	local kids: { Node } = {}
+	if state.confirm and state.confirm ~= BULK then
 		local again = if state.detail then "Click Cancel issue again to cancel " else "Press Delete again to cancel "
-		kid = el("div", "hint", "hint", { class = "lt-hint", text = again .. ident(state.confirm) })
+		table.insert(kids, el("div", "hint", "hint", { class = "lt-hint", text = again .. ident(state.confirm) }))
 	elseif state.lift then
 		local target = Model.stateById(state.states, state.dropState)
 		local to = if target then " to " .. target.name else ""
-		kid = el("div", "hint", "hint", { class = "lt-hint", text = "Moving " .. ident(state.lift) .. to .. " — click a State or press Enter · Esc cancels" })
+		table.insert(kids, el("div", "hint", "hint", { class = "lt-hint", text = "Moving " .. ident(state.lift) .. to .. " — click a State or press Enter · Esc cancels" }))
 	else
 		local u = fresh(state)
-		if not u then
-			return nil
+		if u then
+			table.insert(kids, el("div", "undo", "undo", { class = "lt-undo" }, {
+				el("span", "undo-label", "label", { class = "lt-undo-label", text = u.label }),
+				el("button", "undo-btn", "btn", { class = "lt-undo-btn", text = "Undo", aria = "Undo", actions = { click = "undo" } }),
+			}))
 		end
-		kid = el("div", "undo", "undo", { class = "lt-undo" }, {
-			el("span", "undo-label", "label", { class = "lt-undo-label", text = u.label }),
-			el("button", "undo-btn", "btn", { class = "lt-undo-btn", text = "Undo", aria = "Undo", actions = { click = "undo" } }),
-		})
 	end
-	return region("dock", { kid })
+	local n = if state.detail then 0 else #pickedIds(state)
+	if n > 0 then
+		table.insert(kids, bulkBar(state, n))
+	end
+	return if #kids > 0 then region("dock", kids) else nil
 end
 
 local function empty(kids: { Node }, text: string): BlockView
@@ -1370,13 +2001,17 @@ local function view(state: State): BlockView
 		return {
 			main = region("main", Detail.view(dt, opened, c, state.confirm == dt.id)),
 			dock = dock(state),
-			layer = if dt.d.pop then region("layer", { Create.popover(dt.d, c) }) else nil,
+			layer = if dt.d.pop then region("layer", { Create.scrim("cm-unpop"), Create.popover(dt.d, c) }) else nil,
 		}
 	elseif dt then
 		-- The issue left the board (canceled here or elsewhere, or moved out by a sync).
 		state.detail = nil
 	end
 	local cols = columnsOf(state)
+	if state.menu and not visible(cols, state.menu.id) then
+		-- Its issue left the board (canceled, or moved out by a sync).
+		state.menu = nil
+	end
 	local kids = header(state, #Model.list(cols))
 	if not state.teamId then
 		return empty(kids, "No Linear workspace yet. Run Linear: add workspace and paste a personal API key.")
@@ -1398,7 +2033,9 @@ local function view(state: State): BlockView
 	end
 	local d = state.draft
 	local layer = if d then region("layer", Create.view(d, ctxOf(state)))
-		elseif state.switcher then region("layer", { switcher(state) })
+		elseif state.switcher then region("layer", { Create.scrim("ws-pop"), switcher(state) })
+		elseif state.bulk then region("layer", { Create.scrim("cm-unpop"), Create.popover(state.bulk.d, ctxOf(state)) })
+		elseif state.menu then region("layer", { Create.scrim("menu-close"), menuView(state, state.menu) })
 		else nil
 	return { main = region("main", kids), dock = dock(state), layer = layer }
 end
@@ -1423,11 +2060,21 @@ tern.block.define("board", {
 			keys = {},
 			switcher = false,
 			adding = false,
+			starting = false,
 			loading = false,
 			failures = 0,
 			view = if kvGet("linear-todo.view") == "list" then "list" else "kanban",
 			mine = kvGet("linear-todo.mine") == true,
+			folded = {},
+			picked = {},
 		}
+		-- Copied key by key: stored tables may be read-only.
+		local folded = kvGet("linear-todo.folded")
+		for id, on in (if type(folded) == "table" then folded else {}) do
+			if on == true then
+				state.folded[id] = true
+			end
+		end
 		local s = setupOf()
 		if s then
 			state.teamId = s.teamId
@@ -1443,6 +2090,8 @@ tern.block.define("board", {
 	title = function(state: State): string?
 		if state.adding then
 			return Model.ADD_TITLE
+		elseif state.starting then
+			return Model.START_TITLE
 		end
 		local s = setupOf()
 		return "Linear · " .. (if s and s.teamKey then (s.orgName or "") .. " · " .. s.teamKey else "not set up")
@@ -1457,7 +2106,13 @@ tern.block.define("board", {
 	event = function(state: State, ev: UiEvent, cx: BlockCx)
 		local d = state.draft
 		if d and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
+			local was = d.focus
 			Create.event(d, ev)
+			-- A click into the description editor reports focus without taking Tern's caret off
+			-- the title, so a later click on the title sent nothing. Move the caret explicitly.
+			if d.focus and d.focus ~= was then
+				Create.focus(d, d.focus, cx)
+			end
 			return
 		end
 		local dt = state.detail
@@ -1470,6 +2125,12 @@ tern.block.define("board", {
 			if not mine and ev.ev == "undo" then
 				act(state, "undo", "", cx)
 			end
+			return
+		end
+		-- The search box of the bulk bar's or the menu's list.
+		local c = state.bulk or (state.menu and state.menu.choice)
+		if c and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
+			Create.event(c.d, ev)
 			return
 		end
 		local e = state.edit
@@ -1490,6 +2151,12 @@ tern.block.define("board", {
 			if e and ev.id ~= e.field.id then
 				endEdit(state, false)
 			end
+			return
+		end
+		-- A tick box: Shift extends the selection from the last one ticked.
+		if ev.ev == "change" and ev.name == "pick" and type(ev.value) == "string" then
+			local mods = if type(ev.mods) == "table" then ev.mods else {}
+			act(state, if table.find(mods, "shift") then "pick-range" else "pick", ev.value, cx)
 			return
 		end
 		if ev.ev ~= "action" or type(ev.act) ~= "string" then

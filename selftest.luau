@@ -224,6 +224,16 @@ local cases: { { name: string, fn: () -> () } } = {
 		end,
 	},
 	{
+		name = "rewrite text",
+		fn = function()
+			check(Model.cleanRewrite("  ## A\n\nb  \n") == "## A\n\nb", "trim")
+			check(Model.cleanRewrite("```markdown\n## A\n```") == "## A", "fence")
+			check(Model.cleanRewrite("   \n") == nil, "empty")
+			local p = Model.rewritePrompt("T", "", "FIX")
+			check(string.find(p, "Current description:\n(empty)", 1, true) ~= nil and string.find(p, "team FIX", 1, true) ~= nil, "prompt")
+		end,
+	},
+	{
 		name = "labelClass",
 		fn = function()
 			check(Model.labelClass("#eb5757") == "red", "red")
@@ -258,6 +268,32 @@ local cases: { { name: string, fn: () -> () } } = {
 			check(Linear.retryable("HTTP 502"), "502")
 			check(not Linear.retryable("HTTP 400: bad"), "400")
 			check(not Linear.retryable("Linear: x"), "linear")
+		end,
+	},
+	{
+		name = "startPrompt",
+		fn = function()
+			local it = issue(4, "todo", { priority = 2, assignee = "Ada" })
+			it.labels = { nodes = { { name = "Bug" }, { name = "UI" } } }
+			local p = Model.startPrompt(it, "Fix it", "Todo", "Steps here")
+			check(string.find(p, "^Start working on Linear issue ENG%-4: Fix it%.") ~= nil, "lead")
+			for _, want in { "- URL: https://linear.app/x/issue/ENG-4", "- State: Todo", "- Priority: High", "- Assignee: Ada", "- Labels: Bug, UI", "## Description\n\nSteps here", "skill://grilling", "Do not implement" } do
+				check(string.find(p, want, 1, true) ~= nil, want)
+			end
+			check(string.find(Model.startPrompt(issue(5, "todo"), "T", nil, " "), "(no description)", 1, true) ~= nil, "empty")
+			local bare = Model.startPrompt(issue(5, "todo"), "T", nil, nil)
+			check(string.find(bare, "could not be loaded", 1, true) ~= nil and string.find(bare, "No priority", 1, true) ~= nil, "unloaded")
+		end,
+	},
+	{
+		name = "range",
+		fn = function()
+			local list = { issue(1, "todo"), issue(2, "todo"), issue(3, "prog"), issue(4, "done") }
+			check(table.concat(Model.range(list, "i2", "i4"), ",") == "i2,i3,i4", "down")
+			check(table.concat(Model.range(list, "i3", "i1"), ",") == "i1,i2,i3", "up")
+			check(table.concat(Model.range(list, "i2", "i2"), ",") == "i2", "one")
+			check(table.concat(Model.range(list, "gone", "i3"), ",") == "i3", "anchor gone")
+			check(#Model.range(list, "i1", "gone") == 0, "target gone")
 		end,
 	},
 }

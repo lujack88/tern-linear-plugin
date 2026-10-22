@@ -1,0 +1,3 @@
+# omp --config overlay for chats started from the board: open them in plan mode.
+plan:
+  defaultOnStartup: true

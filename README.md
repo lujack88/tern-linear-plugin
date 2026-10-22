@@ -63,12 +63,42 @@ error.
   (priority, identifier, title, labels, estimate, assignee). `↑`/`↓` run on
   across groups.
 
-The View and the Mine toggle are remembered.
+Each column (Kanban) or group (List) collapses with the `▾` before its name, and
+expands with `▸`; collapsed ones keep their count, and the arrow keys skip them.
+
+The View, the Mine toggle and the collapsed columns are remembered.
+
+## Clicking an issue
+
+- **Click** a row or card: its menu opens under it (below).
+- **Double-click**, or select it with the arrow keys and press `Enter`: the issue
+  view opens.
+- While an issue is lifted for a move, a click drops it instead.
+
+The checkbox, `⠿`, `✎`, `✕` and `▷` keep their own actions.
+
+### The issue menu
+
+As in Linear's right-click menu (Tern blocks get no right-click, so a plain click
+opens it; `m` opens it for the keyboard-selected issue):
+
+- **Status ▸**, **Priority ▸**, **Assignee ▸**: open the New issue modal's list in
+  the menu, the current value checked, with a filter field and a **‹ Back** row.
+- **Open issue** (`Enter`), **▷ Start in omp**, **Open in Linear**, **Copy ID**,
+  **Copy link**, **Rename** (`R`), and **Cancel issue** (click twice).
+
+When the clicked issue is one of several selected, the menu acts on the whole
+selection: its title says how many, and it offers Status, Priority, Assignee,
+**Copy IDs** and **Cancel N issues**. Every change offers one undo.
+
+Keys while it is open: `↑`/`↓` (or `K`/`J`) move, `Enter` runs, `→`/`Enter` opens
+a ▸ list, `←` (or `Backspace` in an empty filter) goes back, `Esc` closes. A click
+outside closes it.
 
 ## The issue view
 
-Click an issue (or select it with the arrow keys and press `Enter`) to open it in
-place of the board, as Linear's list does:
+Double-click an issue (or select it with the arrow keys and press `Enter`) to
+open it in place of the board, as Linear's list does:
 
 - **Title**: edit it in place. It saves on `Enter`, `Tab`, `Esc` or a click elsewhere.
 - **Description**: shown as Markdown. Click it to edit, and it saves when you leave
@@ -78,8 +108,8 @@ place of the board, as Linear's list does:
   shortcuts. Each change is written to Linear at once.
 - **Activity**: who created the issue, then the comments, oldest first. Write a
   comment in the box at the bottom and send it with **Comment** or `Ctrl+Enter`.
-- **Header**: `←` back to the board (`Esc`), **Open in Linear ↗**, and
-  **Cancel issue** (click twice).
+- **Header**: `←` back to the board (`Esc`), **▷ Start**, **Open in Linear ↗**,
+  and **Cancel issue** (click twice).
 
 `J` / `K` open the next or previous issue in the board's order. Every edit offers
 the usual one-step undo. Times are shown in UTC. Comments can be read and added
@@ -102,7 +132,7 @@ refuses, it returns to its old State.
 
 | Action | Key |
 | --- | --- |
-| New issue | click `+` on a column or group, or `c` |
+| New issue | click **+ New issue** in the header, click `+` on a column or group, or `c` |
 | New issue from a template | `Alt+C` |
 
 Both open a **New issue** modal, as in Linear: title, a Markdown description, and
@@ -123,7 +153,9 @@ one chip per property. Clicking a chip opens a searchable list (`↑`/`↓`, `En
 
 The shortcuts work while the caret is outside the title and description (`Esc`
 leaves a field, `Tab` moves between them). `Ctrl+Enter` / `Cmd+Enter` creates
-the issue; `Esc` outside a field closes the modal and drops the draft.
+the issue. `Esc` outside a field, or a click outside the modal, closes it and keeps
+the draft: the next New issue opens it again as it was (a created issue clears it).
+A click outside an open list closes just the list.
 **Create more** keeps the modal open with the same properties after each issue.
 
 A template fills the modal with its title, description and properties. The issue
@@ -132,11 +164,18 @@ not show (sub-issues, for example). Every property the modal shows is sent as
 shown, so clearing a chip clears the template's value. Leaving the description
 untouched keeps the template's own formatting.
 
-## Renaming, canceling
+## Renaming, canceling, starting
 
 | Action | Key |
 | --- | --- |
 | Rename | click ✎, or `r` / `F2` |
+| Start in omp | click **▷ Start** on a row or in the issue view, or the **▷** at a card's bottom-right |
+
+Start opens a new omp chat in plan mode. Its first message is the issue:
+identifier, title, URL, State, priority, assignee, labels and description. It
+tells omp to grill you about the approach with the `grilling` skill, then write
+the plan, and to implement nothing until you approve it. The chat runs in the
+board pane's directory, else your home.
 
 `✕` (or `Delete` pressed twice) cancels an issue: it moves to the team's
 Canceled State. The plugin never deletes issues.
@@ -144,6 +183,30 @@ Canceled State. The plugin never deletes issues.
 Undo the last edit with the undo bar (shown for 10 s) or `Ctrl+Z` / `Cmd+Z`.
 Undo is one step: a move or rename returns to the previous value, a create
 cancels the new issue, a cancel restores the previous State.
+
+## Selecting several issues
+
+| Action | Key |
+| --- | --- |
+| Select / unselect an issue | click its checkbox (left of a row, top-left of a card), or `x` on the keyboard-selected issue |
+| Select a range | `Shift`-click a checkbox: every issue from the last one ticked, in the board's order |
+| Clear the selection | `Esc`, or `×` in the bar |
+
+The checkbox shows when you hover an issue, and on every issue while any is
+selected; selected issues are tinted. A click on the rest of a selected row or
+card opens the issue menu for the whole selection. The selection is not saved;
+issues that are canceled, synced away, or hidden by Mine leave it, and switching
+workspaces clears it.
+
+While at least one issue is selected, a bar at the bottom shows how many and:
+
+- **Status ▾**, **Priority ▾**, **Assignee ▾**: the New issue modal's lists
+  (`↑`/`↓`, `Enter`, `Esc`); the pick is written to every selected issue.
+- **Cancel issues**: click twice (**Cancel N?**); cancels every selected issue
+  and clears the selection.
+
+One undo (the undo bar or `Ctrl+Z`) reverts the whole bulk edit. The selection
+stays after a Status, Priority or Assignee change, as in Linear.
 
 ## Commands
 

@@ -1,6 +1,6 @@
 # Sync model
 
-How version 0.6.0 keeps the Board in step with Linear.
+How version 0.7.0 keeps the Board in step with Linear.
 
 ## Host and window halves
 
@@ -24,6 +24,16 @@ window's keychain and prompts. So the board's **Add workspace…** sets the pane
 title to `Model.ADD_TITLE`; the window half watches board panes' `title` events,
 answers with `{act = "ws-added"}` (the title reverts) and runs its key prompt.
 
+Starting work on an issue needs `cx.agents:start`, which is also window-only.
+**▷ Start** (card/row control or the issue view's header) loads the description
+when the issue view has not, writes the chat's first message (`Model.startPrompt`)
+to kv `linear-todo.start` and sets the title to `Model.START_TITLE`. The window
+answers with `{act = "started"}`, takes and clears the kv entry, and opens an omp
+chat on it in the board pane's cwd (else `~`). The command is
+`omp --config <plugin dir>/plan-mode.yml`: omp has no plan-mode flag, and that
+overlay sets `plan.defaultOnStartup` for this chat only. A failed description
+fetch still starts the chat; the prompt says the description could not be loaded.
+
 The window injects again on `window_start`, 300 ms after load (a reload does not
 fire `window_start`), after adding or switching a workspace, and up to 3 s after
 opening a board, to cover the block's init race. The block ignores a duplicate key
@@ -43,6 +53,7 @@ halves.
 | `linear-todo.status` | `{at, ok, error?, issues}` of the last sync, for `Linear: status`. |
 | `linear-todo.view` | `"kanban"` or `"list"`. |
 | `linear-todo.mine` | `true` while the Mine toggle is on. |
+| `linear-todo.folded` | `{[stateId] = true}` for collapsed columns / List groups. |
 | `linear-todo.interval` | Poll interval in seconds; 60 when unset or below 30. |
 | `linear-todo.selftest` | `"ok"` or the last self-test failure. |
 

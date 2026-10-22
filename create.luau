@@ -38,6 +38,10 @@ export type Draft = {
 	pop: Pop?,
 	more: boolean,
 	error: string?,
+	-- A rewrite is running; the description before the last rewrite, and the text it produced.
+	rewriting: boolean,
+	beforeRewrite: string?,
+	rewritten: string?,
 }
 -- What the modal needs from the board: the team's States, the fetched choices, the Setup.
 export type Ctx = { states: { any }, meta: any?, teamKey: string, teamId: string, viewerId: string? }
@@ -65,6 +69,7 @@ function M.new(stateId: string, assigneeId: string?): Draft
 		desc = Field.new("", true, 20000),
 		focus = "title",
 		more = false,
+		rewriting = false,
 	}
 end
 
@@ -350,6 +355,7 @@ function M.again(d: Draft, cx: BlockCx)
 	Field.reset(d.title, "")
 	Field.reset(d.desc, "")
 	d.templateId, d.templateName, d.descTemplate, d.error = nil, nil, nil, nil
+	d.rewriting, d.beforeRewrite, d.rewritten = false, nil, nil
 	M.focus(d, "title", cx)
 end
 
@@ -532,7 +538,8 @@ local PLACEHOLDER: { [Kind]: string } = {
 	due = "YYYY-MM-DD or pick below", template = "Use a template…",
 }
 
-function M.popover(d: Draft, c: Ctx): Node
+-- `at` anchors it to that node instead of its chip; `lead` goes above the search field (a Back row).
+function M.popover(d: Draft, c: Ctx, at: string?, lead: Node?): Node
 	local pop = d.pop :: Pop
 	local rows: { Node } = {}
 	-- Status, priority and due date need nothing fetched.
@@ -565,13 +572,18 @@ function M.popover(d: Draft, c: Ctx): Node
 			table.insert(rows, el("div", "pop-none", "none", { class = "lt-pop-none", text = "No matches" }))
 		end
 	end
+	local kids: { Node } = {
+		Field.node("input", { key = "q", role = ROLE .. "pop-q", placeholder = PLACEHOLDER[pop.kind] }, pop.q, "", SEARCH),
+		el("div", "pop-list", "opts", { class = "lt-pop-list" }, rows),
+	}
+	if lead then
+		table.insert(kids, 1, lead)
+	end
 	return {
 		k = "overlay",
-		p = { key = "pop", role = ROLE .. "pop", aria = PLACEHOLDER[pop.kind], anchor = { node = d.anchor .. "." .. pop.kind, side = "below" }, size = "sm" },
-		c = {
-			Field.node("input", { key = "q", role = ROLE .. "pop-q", placeholder = PLACEHOLDER[pop.kind] }, pop.q, "", SEARCH),
-			el("div", "pop-list", "opts", { class = "lt-pop-list" }, rows),
-		},
+		-- The template chip sits in the modal's top row, not among the property chips.
+		p = { key = "pop", role = ROLE .. "pop", aria = PLACEHOLDER[pop.kind], anchor = { node = at or (if pop.kind == "template" then d.root .. ".top.template" else d.anchor .. "." .. pop.kind), side = "below" }, size = "sm" },
+		c = kids,
 	} :: any
 end
 
@@ -588,6 +600,11 @@ function M.kinds(c: Ctx): { Kind }
 	end
 	table.insert(kinds, "due")
 	return kinds
+end
+
+-- A cover behind the layer's overlays: clicking it runs `action` (closes what is open); `dim` shades the board.
+function M.scrim(action: string, dim: boolean?): Node
+	return el("div", "scrim", "scrim", { class = "lt-scrim", attrs = { ["data-dim"] = flag(dim == true) }, actions = { click = action } })
 end
 
 -- The layer's children: the modal, and the open popover anchored to its chip.
@@ -611,6 +628,15 @@ function M.view(d: Draft, c: Ctx): { Node }
 		table.insert(body, el("div", "modal-error", "error", { class = "lt-modal-error", tone = "error", text = d.error }))
 	end
 	table.insert(body, el("div", "modal-foot", "foot", { class = "lt-modal-foot" }, {
+		if d.rewriting then el("span", "rewrite", "rewrite", { class = "lt-rewrite", text = "Rewriting…" })
+		elseif d.beforeRewrite ~= nil and d.desc.text == d.rewritten then
+			el("button", "rewrite", "rewrite", { class = "lt-more lt-rewrite", text = "Undo rewrite", actions = { click = "cm-unrewrite" } })
+		else el("button", "rewrite", "rewrite", {
+			class = "lt-more lt-rewrite",
+			text = "✨ Rewrite",
+			title = "Rewrite the description with your default model",
+			actions = { click = "cm-rewrite" },
+		}),
 		el("span", "spacer", "sp", { class = "lt-spacer" }),
 		el("button", "more", "more", {
 			class = "lt-more",
@@ -621,7 +647,9 @@ function M.view(d: Draft, c: Ctx): { Node }
 		el("button", "submit", "submit", { class = "lt-submit", text = "Create issue", title = "Ctrl+Enter", actions = { click = "cm-submit" } }),
 	}))
 	local out: { Node } = {
-		ui.node("overlay", { key = "create", role = ROLE .. "modal", aria = "New issue", size = "lg", modal = true }, body),
+		-- A click outside closes the open list, else the modal (its draft is kept).
+		M.scrim(if d.pop then "cm-unpop" else "cm-close", true),
+		ui.node("overlay", { key = "create", role = ROLE .. "modal", aria = "New issue", size = "lg" }, body),
 	}
 	if d.pop then
 		table.insert(out, M.popover(d, c))
@@ -629,8 +657,8 @@ function M.view(d: Draft, c: Ctx): { Node }
 	return out
 end
 
--- Clicks inside the modal: "submit", "close", or whether it was the modal's.
-function M.act(d: Draft, name: string, value: string, c: Ctx, cx: BlockCx): ("submit" | "close" | boolean)
+-- Clicks inside the modal: "submit", "close", "rewrite", or whether it was the modal's.
+function M.act(d: Draft, name: string, value: string, c: Ctx, cx: BlockCx): ("submit" | "close" | "rewrite" | boolean)
 	if name == "cm-pop" then
 		if d.pop and d.pop.kind == value then
 			M.closePop(d, cx)
@@ -643,6 +671,13 @@ function M.act(d: Draft, name: string, value: string, c: Ctx, cx: BlockCx): ("su
 		d.more = not d.more
 	elseif name == "cm-submit" then
 		return "submit"
+	elseif name == "cm-rewrite" then
+		return "rewrite"
+	elseif name == "cm-unrewrite" then
+		Field.reset(d.desc, d.beforeRewrite or "")
+		d.beforeRewrite, d.rewritten = nil, nil
+	elseif name == "cm-unpop" then
+		M.closePop(d, cx)
 	elseif name == "cm-close" then
 		return "close"
 	else
