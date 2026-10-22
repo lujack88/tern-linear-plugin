@@ -37,9 +37,16 @@ M.UPDATE = "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: 
 	.. ISSUE_FIELDS
 	.. " } } }"
 
--- What the issue view adds to a board issue: the description, who created it, and the comments.
-M.DETAIL = "query($id: String!) { issue(id: $id) { id description createdAt creator { name } "
-	.. "comments(first: 100) { nodes { id body createdAt user { id name } botActor { name } } } } }"
+-- What the issue view adds to a board issue: the description, who created it, the git branch
+-- name, the comments, the sub-issues, the history the activity shows, and the related issues.
+-- Nested lists stay small (labels 10) to keep the query under Linear's complexity limit.
+local RELATED = "id identifier title url state { name type }"
+M.DETAIL = "query($id: String!) { issue(id: $id) { id description createdAt branchName creator { id name } "
+	.. "comments(first: 100) { nodes { id body createdAt user { id name } botActor { name } } } "
+	.. "children(first: 50) { nodes { id identifier title url state { id name type } assignee { id name } labels(first: 10) { nodes { id name color } } } } "
+	.. "history(first: 50) { nodes { id createdAt actor { name } botActor { name } fromState { name type } toState { name type } relationChanges { identifier type } } } "
+	.. "relations(first: 50) { nodes { id type relatedIssue { " .. RELATED .. " } } } "
+	.. "inverseRelations(first: 50) { nodes { id type issue { " .. RELATED .. " } } } } }"
 
 M.COMMENT = "mutation($input: CommentCreateInput!) { commentCreate(input: $input) { success "
 	.. "comment { id body createdAt user { id name } botActor { name } } } }"
@@ -254,7 +261,9 @@ function M.meta(key: string, teamId: string, cb: (meta: any?, err: string?) -> (
 	end)
 end
 
--- The issue view's extras for one issue; comments oldest first.
+-- The issue view's extras for one issue; comments oldest first. Every list is a fresh copy of
+-- its table nodes (decoded JSON is read-only, and a created sub-issue is added to `children`).
+-- `related`: { type, inverse, issue }, `inverse` for a relation another issue holds to this one.
 function M.detail(key: string, id: string, cb: (detail: any?, err: string?) -> ())
 	M.call(key, M.DETAIL, { id = id }, function(data: any, err: string?)
 		if err then
@@ -266,15 +275,41 @@ function M.detail(key: string, id: string, cb: (detail: any?, err: string?) -> (
 			cb(nil, "Linear: issue not found")
 			return
 		end
-		-- Decoded JSON is read-only (protected metatable): copy before sorting or adding to it.
-		local comments = {}
-		for _, cm in nodes(issue.comments) do
-			table.insert(comments, cm)
+		local function copy(conn: any): { any }
+			local out = {}
+			for _, n in nodes(conn) do
+				if type(n) == "table" then
+					table.insert(out, n)
+				end
+			end
+			return out
 		end
+		local comments = copy(issue.comments)
 		table.sort(comments, function(a: any, b: any): boolean
-			return (a.createdAt or "") < (b.createdAt or "")
+			return tostring(a.createdAt) < tostring(b.createdAt)
 		end)
-		cb({ id = issue.id, description = issue.description, createdAt = issue.createdAt, creator = issue.creator, comments = comments }, nil)
+		local related = {}
+		for _, r in copy(issue.relations) do
+			if type(r.relatedIssue) == "table" then
+				table.insert(related, { type = r.type, inverse = false, issue = r.relatedIssue })
+			end
+		end
+		for _, r in copy(issue.inverseRelations) do
+			if type(r.issue) == "table" then
+				table.insert(related, { type = r.type, inverse = true, issue = r.issue })
+			end
+		end
+		cb({
+			id = issue.id,
+			description = issue.description,
+			createdAt = issue.createdAt,
+			creator = issue.creator,
+			branchName = if type(issue.branchName) == "string" then issue.branchName else nil,
+			comments = comments,
+			children = copy(issue.children),
+			history = copy(issue.history),
+			related = related,
+		}, nil)
 	end)
 end
 

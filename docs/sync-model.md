@@ -137,8 +137,17 @@ closed; with Create more on, the failed title is named in the error toast.
 The board's issue fields include `dueDate`, `project` and `cycle`, so the view's
 property chips come straight from the board issue. Opening an issue fetches only
 what the board lacks (`linear.DETAIL`): the Markdown `description`, the creator,
-`createdAt` and up to 100 comments. Choices for the lists come from `linear.META`,
+`createdAt`, `branchName`, up to 100 comments, up to 50 `children` (identifier,
+title, url, state, assignee, first 10 labels), `history(first: 50)` (actor,
+`fromState`/`toState`, `relationChanges`), and `relations` / `inverseRelations`
+(the other issue's identifier, title, url and state). Nested lists stay small to
+keep the query under Linear's complexity limit. None of it is cached, so old
+board caches load unchanged. Choices for the lists come from `linear.META`,
 fetched when none are loaded yet.
+
+The activity merges creation, history and comments by time (`Model.timeline`).
+A relation change's code is "a"/"r" then the relation letter ("ar": added
+related).
 
 Edits use the board's own write path (`push`, with the overlay and undo):
 
@@ -149,6 +158,8 @@ Edits use the board's own write path (`push`, with the overlay and undo):
 - **Other properties**: one `issueUpdate` with just the changed fields (`null`
   when cleared), and an undo that writes the old values back.
 - **Comment**: `commentCreate { issueId, body }`, appended when Linear confirms.
+- **Sub-issue**: the create modal's `issueCreate` with `parentId`; the new issue
+  joins the open parent's list when Linear confirms.
 
 Linear's values flow into every field the caret is not in. The chips take them
 only while no write to the issue is in flight, so a refused write snaps back. The

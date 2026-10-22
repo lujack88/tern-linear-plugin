@@ -30,6 +30,9 @@ export type Draft = {
 	dueDate: string?,
 	templateId: string?,
 	templateName: string?,
+	-- The issue a sub-issue is created under (its id and identifier), from the issue view's "+".
+	parentId: string?,
+	parentIdent: string?,
 	-- The description a template filled in; left untouched, Linear applies the template's own rich text.
 	descTemplate: string?,
 	title: Field.Field,
@@ -334,7 +337,7 @@ function M.input(d: Draft, teamId: string): (any?, string?)
 		return nil, "A title is required"
 	end
 	local t = d.templateId ~= nil
-	local input: { [string]: any } = { teamId = teamId, title = title, stateId = d.stateId, priority = d.priority, templateId = d.templateId }
+	local input: { [string]: any } = { teamId = teamId, title = title, stateId = d.stateId, priority = d.priority, templateId = d.templateId, parentId = d.parentId }
 	input.assigneeId = if t then orNull(d.assigneeId) else d.assigneeId
 	input.estimate = if t then orNull(d.estimate) else d.estimate
 	input.projectId = if t then orNull(d.projectId) else d.projectId
@@ -514,14 +517,28 @@ local KEYS: { [Kind]: string } = {
 	project = "Shift+P", cycle = "Shift+C", due = "Shift+D", template = "T",
 }
 
-function M.chip(d: Draft, kind: Kind, c: Ctx): Node
+-- The issue view's sidebar wording for an unset property, and the icon of each row without one.
+local SIDE_EMPTY: { [Kind]: string } = {
+	priority = "Set priority", assignee = "Assign", labels = "Add label", estimate = "Set estimate",
+	project = "Add to project", cycle = "Add to cycle", due = "Set due date",
+}
+local SIDE_ICON: { [Kind]: string } = { assignee = "user", labels = "tag", estimate = "triangle", project = "cube", cycle = "refresh", due = "clock" }
+
+-- `side`: a row of the issue view's sidebar, with an icon for every property and Linear's
+-- sidebar wording while unset.
+function M.chip(d: Draft, kind: Kind, c: Ctx, side: boolean?): Node
 	local text, set = chipText(d, kind, c)
+	if side and not set and SIDE_EMPTY[kind] then
+		text = SIDE_EMPTY[kind]
+	end
 	local lead: Node? = nil
 	if kind == "status" then
 		local s = Model.stateById(c.states, d.stateId)
 		lead = el("span", "state", "icon", { class = "lt-state", attrs = { ["data-type"] = s and s.type } })
 	elseif kind == "priority" then
 		lead = el("span", "prio-dot", "icon", { class = "lt-chip-icon", text = if d.priority == 1 then "!" else "▮" })
+	elseif side and SIDE_ICON[kind] then
+		lead = { k = "icon", p = { name = SIDE_ICON[kind], key = "icon" } } :: any
 	end
 	return el("button", "chip", kind, {
 		class = "lt-chip",
@@ -616,7 +633,7 @@ function M.view(d: Draft, c: Ctx): { Node }
 	local body: { Node } = {
 		el("div", "modal-top", "top", { class = "lt-modal-top" }, {
 			el("span", "ws", "team", { class = "lt-ws", text = c.teamKey }),
-			el("span", "modal-crumb", "crumb", { class = "lt-modal-crumb", text = "› New issue" }),
+			el("span", "modal-crumb", "crumb", { class = "lt-modal-crumb", text = if d.parentIdent then "› New sub-issue of " .. d.parentIdent else "› New issue" }),
 			el("span", "spacer", "sp", { class = "lt-spacer" }),
 			M.chip(d, "template", c),
 		}),

@@ -5,6 +5,7 @@
 
 local Field = require("./field")
 local Create = require("./create")
+local Model = require("./model")
 
 local ui = tern.ui
 local ROLE = "linear-todo."
@@ -23,15 +24,21 @@ export type Detail = {
 	comment: Field.Field,
 	-- The caret is in the comment box.
 	commenting: boolean,
-	-- Linear.detail's answer: description, creator, createdAt, comments; nil until loaded.
+	-- Linear.detail's answer: description, creator, createdAt, branchName, comments, children,
+	-- history, related; nil until loaded.
 	info: any?,
 	error: string?,
 	sending: boolean,
+	-- The Sub-issues section is expanded.
+	subsOpen: boolean,
+	-- What the last "copy" or "open" intent names: "link" / "id" / "branch", or an issue id.
+	target: string?,
 }
 
 -- What the host should do after a key, click or event: "close", "title" / "desc" (save that
--- field), "comment" (post it), "next" / "prev" (open the neighbouring issue), "web", "start",
--- "chat" (open the "Send to chat" list) or "undo".
+-- field), "comment" (post it), "next" / "prev" (open the neighbouring issue), "start", "split"
+-- (the Start dropdown), "more" (the issue menu), "copy" / "open" (of `target`), "subissue"
+-- (the New issue modal for a sub-issue) or "undo".
 export type Intent = string
 
 local function el(tag: string, role: string, key: string, props: { [string]: any }?, children: { Node }?): Node
@@ -121,7 +128,7 @@ function M.new(issue: any, stateId: string, title: string): Detail
 	d.root, d.anchor, d.focus = ROOT, ANCHOR, nil
 	fromIssue(d, issue, stateId)
 	Field.reset(d.title, title)
-	return { id = issue.id, d = d, comment = Field.new("", true, 20000), commenting = false, sending = false }
+	return { id = issue.id, d = d, comment = Field.new("", true, 20000), commenting = false, sending = false, subsOpen = true }
 end
 
 -- Takes Linear's values into every field the caret is not in. `idle`: no write to this issue
@@ -246,18 +253,29 @@ function M.event(dt: Detail, ev: UiEvent): (boolean, Intent?)
 	return mine
 end
 
+-- Clicks that only hand an intent to the host.
+local INTENTS: { [string]: Intent } = {
+	["dt-back"] = "close",
+	["dt-start"] = "start",
+	["dt-split"] = "split",
+	["dt-more"] = "more",
+	["dt-send"] = "comment",
+	["dt-next"] = "next",
+	["dt-prev"] = "prev",
+	["dt-sub"] = "subissue",
+}
+
 -- A click in the view: an intent, or whether it was the view's.
 function M.act(dt: Detail, name: string, value: string, c: Create.Ctx, cx: BlockCx): Intent | boolean
-	if name == "dt-back" then
-		return "close"
-	elseif name == "dt-web" then
-		return "web"
-	elseif name == "dt-start" then
-		return "start"
-	elseif name == "dt-chat" then
-		return "chat"
-	elseif name == "dt-send" then
-		return "comment"
+	local intent = INTENTS[name]
+	if intent then
+		return intent
+	elseif name == "dt-copy" or name == "dt-open" then
+		dt.target = value
+		return if name == "dt-copy" then "copy" else "open"
+	elseif name == "dt-subs" then
+		dt.subsOpen = not dt.subsOpen
+		return true
 	elseif name == "dt-desc" then
 		dt.commenting = false
 		Create.focus(dt.d, "desc", cx)
@@ -269,6 +287,25 @@ function M.act(dt: Detail, name: string, value: string, c: Create.Ctx, cx: Block
 		return Create.act(dt.d, name, value, c, cx) == true
 	end
 	return false
+end
+
+-- The Linear URL of a sub-issue or related issue the view shows, for one not on the board.
+function M.urlOf(dt: Detail, id: string): string?
+	local info = dt.info
+	if not info then
+		return nil
+	end
+	for _, k in info.children do
+		if k.id == id and type(k.url) == "string" then
+			return k.url
+		end
+	end
+	for _, r in info.related do
+		if r.issue.id == id and type(r.issue.url) == "string" then
+			return r.issue.url
+		end
+	end
+	return nil
 end
 
 -- View --------------------------------------------------------------------------------
@@ -285,24 +322,193 @@ local function md(key: string, text: string): Node
 	return el("div", "md", key, { class = "lt-md" }, { ui.md(text) })
 end
 
--- The main region's children for the open issue; `armed`: the Cancel button awaits its second click.
-function M.view(dt: Detail, issue: any, c: Create.Ctx, armed: boolean): { Node }
+-- A Tern icon by name.
+local function icon(name: string): Node
+	return { k = "icon", p = { name = name, key = "icon" } } :: any
+end
+
+-- A small borderless icon button; `open`: its menu is showing.
+local function iconBtn(key: string, name: string, label: string, action: string, open: boolean?): Node
+	return el("button", "dt-icon", key, {
+		class = "lt-dt-icon",
+		aria = label,
+		title = label,
+		attrs = { ["data-open"] = flag(open == true) },
+		actions = { click = action },
+	}, { icon(name) })
+end
+
+local function str(v: any): string?
+	return if type(v) == "string" then v else nil
+end
+
+local function stateIcon(s: any, key: string): Node
+	return el("span", "state", key, { class = "lt-state", attrs = { ["data-type"] = if type(s) == "table" then str(s.type) else nil }, title = if type(s) == "table" then str(s.name) else nil })
+end
+
+local function avatar(name: string?, key: string): Node
+	return el("span", "avatar", key, { class = "lt-avatar", text = Model.initials(name), title = name })
+end
+
+-- A sub-issue row: status, title, labels and assignee; a click opens it.
+local function subRow(k: any): Node
+	local kids: { Node } = {
+		stateIcon(k.state, "state"),
+		el("span", "dt-row-title", "title", { class = "lt-dt-row-title", text = str(k.title) or "" }),
+		el("span", "spacer", "sp", { class = "lt-spacer" }),
+	}
+	local labels = if type(k.labels) == "table" and type(k.labels.nodes) == "table" then k.labels.nodes else {}
+	for i, l in labels do
+		if type(l) == "table" and str(l.name) then
+			table.insert(kids, el("span", "label", "l" .. i, { class = "lt-label", attrs = { ["data-c"] = Model.labelClass(str(l.color)) } }, {
+				el("span", "dot", "dot", { class = "lt-dot" }),
+				el("span", "label-name", "name", { class = "lt-label-name", text = l.name }),
+			}))
+		end
+	end
+	if type(k.assignee) == "table" then
+		table.insert(kids, avatar(str(k.assignee.name), "avatar"))
+	end
+	return el("div", "dt-row", "s-" .. k.id, { class = "lt-dt-row", title = str(k.identifier), actions = { click = "dt-open=" .. k.id } }, kids)
+end
+
+-- "▾ Sub-issues", its progress ring and "+", then the sub-issue rows while expanded.
+local function subIssues(dt: Detail, kids: { any }): Node
+	local done, total = Model.progress({ children = { nodes = kids } })
+	local head: { Node } = {
+		el("button", "dt-subs-toggle", "toggle", {
+			class = "lt-dt-subs-toggle",
+			text = (if dt.subsOpen then "▾  " else "▸  ") .. "Sub-issues",
+			attrs = { ["aria-expanded"] = if dt.subsOpen then "true" else "false" },
+			actions = { click = "dt-subs" },
+		}),
+	}
+	if total > 0 then
+		table.insert(head, el("span", "progress", "progress", {
+			class = "lt-progress lt-dt-progress",
+			title = done .. " of " .. total .. " sub-issues done",
+			attrs = { ["data-p"] = if done == total then "done" elseif done > 0 then "part" else nil },
+		}, {
+			el("span", "ring", "ring", { class = "lt-ring" }),
+			el("span", "progress-n", "n", { class = "lt-progress-n", text = done .. "/" .. total }),
+		}))
+	end
+	table.insert(head, el("span", "spacer", "sp", { class = "lt-spacer" }))
+	table.insert(head, iconBtn("add", "plus", "Add sub-issue", "dt-sub"))
+	local out: { Node } = { el("div", "dt-subs-head", "head", { class = "lt-dt-subs-head" }, head) }
+	if dt.subsOpen then
+		for _, k in kids do
+			table.insert(out, subRow(k))
+		end
+	end
+	return el("div", "dt-subs", "subs", { class = "lt-dt-subs" }, out)
+end
+
+-- The activity: one compact line per event (an avatar, State or link icon, then "who did what ·
+-- 2h ago", the UTC time on hover), comments as cards in between.
+local function timeline(info: any): { Node }
+	local now = os.time()
+	local out: { Node } = {}
+	for i, e in Model.timeline(info) do
+		local ago = Model.ago(e.at, now)
+		if e.kind == "comment" then
+			local cm = e.comment
+			table.insert(out, el("div", "dt-comment", "e" .. i, { class = "lt-dt-comment" }, {
+				el("div", "dt-comment-head", "head", { class = "lt-dt-comment-head" }, {
+					avatar(e.who, "avatar"),
+					el("span", "dt-author", "who", { class = "lt-dt-author", text = e.who }),
+					el("span", "dt-muted", "at", { class = "lt-dt-muted", text = ago, title = stamp(e.at) }),
+				}),
+				md("body", str(cm.body) or ""),
+			}))
+			continue
+		end
+		local lead = if e.kind == "state" then stateIcon({ type = e.stateType }, "lead")
+			elseif e.kind == "relation" then el("span", "dt-event-icon", "lead", { class = "lt-dt-event-icon" }, { icon("link") })
+			else avatar(e.who, "lead")
+		local what = e.text
+		if e.ident then
+			what ..= " " .. e.ident .. (if e.title then " " .. e.title else "")
+		end
+		table.insert(out, el("div", "dt-event", "e" .. i, { class = "lt-dt-event", title = stamp(e.at) }, {
+			lead,
+			el("span", "dt-event-text", "text", { class = "lt-dt-event-text", text = e.who .. " " .. what }),
+			el("span", "dt-event-at", "at", { class = "lt-dt-event-at", text = "· " .. ago }),
+		}))
+	end
+	return out
+end
+
+local RELATION_LABEL: { [string]: { string } } = {
+	blocks = { "Blocks", "Blocked by" },
+	duplicate = { "Duplicate of", "Duplicated by" },
+	similar = { "Similar", "Similar" },
+}
+
+-- The sidebar's related issues: status, ID and title; a click opens it.
+local function relatedRows(related: { any }): { Node }
+	local out: { Node } = {}
+	for i, r in related do
+		local o = r.issue
+		local kids: { Node } = {
+			stateIcon(o.state, "state"),
+			el("span", "dt-side-id", "id", { class = "lt-dt-side-id", text = str(o.identifier) or "" }),
+			el("span", "dt-row-title", "title", { class = "lt-dt-row-title", text = str(o.title) or "" }),
+		}
+		local label = RELATION_LABEL[str(r.type) or ""]
+		if label then
+			table.insert(kids, el("span", "dt-muted", "type", { class = "lt-dt-muted", text = label[if r.inverse then 2 else 1] }))
+		end
+		table.insert(out, el("div", "dt-side-row", "r" .. i, {
+			class = "lt-dt-side-row",
+			title = (str(o.identifier) or "") .. " " .. (str(o.title) or ""),
+			actions = { click = "dt-open=" .. tostring(o.id) },
+		}, kids))
+	end
+	return out
+end
+
+local function heading(key: string, text: string): Node
+	return el("div", "dt-heading", key, { class = "lt-dt-heading", text = text })
+end
+
+-- The main region's children for the open issue: `pos` of `total` is its place in the board's
+-- order (0 when it is not shown there); `open` the header menu showing, "more" or "split".
+function M.view(dt: Detail, issue: any, c: Create.Ctx, pos: number, total: number, open: string?): { Node }
 	local d = dt.d
+	local info = dt.info
+	local head: { Node } = {
+		el("button", "dt-crumb-btn", "team", { class = "lt-dt-crumb-btn", text = c.teamKey, title = "Back to the board (Esc)", actions = { click = "dt-back" } }),
+		el("span", "dt-sep", "s1", { class = "lt-dt-sep", text = "›" }),
+		el("button", "dt-crumb-btn", "issues", { class = "lt-dt-crumb-btn", text = "Issues", title = "Back to the board (Esc)", actions = { click = "dt-back" } }),
+		el("span", "dt-sep", "s2", { class = "lt-dt-sep", text = "›" }),
+		el("span", "dt-crumb", "crumb", { class = "lt-dt-crumb", text = issue.identifier .. "  " .. d.title.text, title = d.title.text }),
+		iconBtn("more", "more", "More actions", "dt-more", open == "more"),
+		el("span", "spacer", "sp", { class = "lt-spacer" }),
+	}
+	if pos > 0 then
+		table.insert(head, el("span", "dt-pos", "pos", { class = "lt-dt-pos", text = pos .. " / " .. total }))
+	end
+	table.insert(head, iconBtn("next", "arrow-down", "Next issue (J)", "dt-next"))
+	table.insert(head, iconBtn("prev", "arrow-up", "Previous issue (K)", "dt-prev"))
 	local out: { Node } = {
-		el("div", "head", "head", { class = "lt-head" }, {
-			el("button", "back", "back", { class = "lt-refresh", text = "←", aria = "Back to the board", title = "Back to the board (Esc)", actions = { click = "dt-back" } }),
-			el("span", "ws", "team", { class = "lt-ws", text = c.teamKey }),
-			el("span", "dt-crumb", "crumb", { class = "lt-dt-crumb", text = issue.identifier }),
+		el("div", "head", "head", { class = "lt-head lt-dt-head" }, head),
+		el("div", "dt-tools", "tools", { class = "lt-dt-tools" }, {
 			el("span", "spacer", "sp", { class = "lt-spacer" }),
-			el("button", "start", "start", { class = "lt-start", text = "▷ Start", title = "Start working on this issue in a new omp chat", actions = { click = "dt-start" } }),
-			el("button", "dt-chat", "chat", { class = "lt-tab", text = "Send to chat ▾", title = "Send this issue to an open chat", actions = { click = "dt-chat" } }),
-			el("button", "dt-web", "web", { class = "lt-tab", text = "Open in Linear ↗", title = issue.url, actions = { click = "dt-web" } }),
-			el("button", "act", "cancel", {
-				class = "lt-tab lt-del",
-				text = if armed then "Cancel issue?" else "Cancel issue",
-				title = if armed then "Click again to cancel the issue" else "Moves the issue to Canceled",
-				attrs = { ["data-confirm"] = flag(armed) },
-				actions = { click = "cancel=" .. dt.id },
+			iconBtn("copy-link", "link", "Copy issue URL", "dt-copy=link"),
+			iconBtn("copy-id", "hash", "Copy issue ID", "dt-copy=id"),
+			iconBtn("copy-branch", "branch", "Copy git branch name", "dt-copy=branch"),
+			-- A split button: ▷ Start starts at once, ▾ opens the dropdown (New chat / Send to a session).
+			el("div", "split", "split", { class = "lt-split" }, {
+				el("button", "start", "start", { class = "lt-start lt-split-main", text = "▷ Start", title = "Start working on this issue in a new omp chat", actions = { click = "dt-start" } }),
+				el("button", "split-caret", "caret", {
+					class = "lt-start lt-split-caret",
+					text = "▾",
+					aria = "Start or send to a session",
+					title = "Start in a new chat or send to a session",
+					attrs = { ["data-open"] = flag(open == "split") },
+					actions = { click = "dt-split" },
+				}),
 			}),
 		}),
 	}
@@ -315,9 +521,10 @@ function M.view(dt: Detail, issue: any, c: Create.Ctx, armed: boolean): { Node }
 	}
 	if d.focus == "desc" then
 		table.insert(left, Field.node("editor", { key = "desc", role = ROLE .. "dt-desc", placeholder = "Add description…" }, d.desc, "", ROOT .. ".desc"))
-	elseif not dt.info then
+	elseif not info then
 		table.insert(left, el("div", "dt-desc-view", "desc-view", { class = "lt-dt-desc lt-dt-muted", text = "Loading…" }))
 	else
+		-- shortcut: issue mentions show as Markdown links, not Linear's inline chips: ui.md takes text only.
 		local text = d.desc.text
 		table.insert(left, el("div", "dt-desc-view", "desc-view", {
 			class = "lt-dt-desc",
@@ -326,40 +533,47 @@ function M.view(dt: Detail, issue: any, c: Create.Ctx, armed: boolean): { Node }
 		}, { if text ~= "" then md("md", text) else el("span", "dt-muted", "ph", { class = "lt-dt-muted", text = "Add description…" }) }))
 	end
 
-	table.insert(left, el("div", "dt-section", "activity", { class = "lt-dt-section", text = "Activity" }))
-	local info = dt.info
 	if info then
-		local who = if type(info.creator) == "table" then info.creator.name else "Someone"
-		table.insert(left, el("div", "dt-event", "created", { class = "lt-dt-event", text = who .. " created the issue · " .. stamp(info.createdAt) }))
-		for _, cm in (if type(info.comments) == "table" then info.comments else {}) do
-			local author = if type(cm.user) == "table" then cm.user.name elseif type(cm.botActor) == "table" and cm.botActor.name then cm.botActor.name else "Linear"
-			table.insert(left, el("div", "dt-comment", "c-" .. cm.id, { class = "lt-dt-comment" }, {
-				el("div", "dt-comment-head", "head", { class = "lt-dt-comment-head" }, {
-					el("span", "dt-author", "who", { class = "lt-dt-author", text = author }),
-					el("span", "dt-muted", "at", { class = "lt-dt-muted", text = stamp(cm.createdAt) }),
-				}),
-				md("body", cm.body or ""),
-			}))
-		end
+		table.insert(left, subIssues(dt, info.children))
+		table.insert(left, el("div", "dt-divider", "divider", { class = "lt-dt-divider" }))
+		table.insert(left, heading("activity", "Activity"))
+		table.insert(left, el("div", "dt-timeline", "timeline", { class = "lt-dt-timeline" }, timeline(info)))
 	end
-	-- The wrapper's click puts the caret in the box (a bare editor is not always focused by a click).
+	-- The card's click puts the caret in the box (a bare editor is not always focused by a click).
 	table.insert(left, el("div", "dt-compose", "compose", { class = "lt-dt-compose", actions = { click = "dt-comment" } }, {
 		Field.node("editor", { key = "comment", role = ROLE .. "dt-comment-input", placeholder = "Leave a comment…" }, dt.comment, "", COMMENT),
-	}))
-	table.insert(left, el("div", "dt-comment-foot", "send", { class = "lt-dt-comment-foot" }, {
-		el("span", "dt-muted", "hint", { class = "lt-dt-muted", text = "Ctrl+Enter to send" }),
-		el("span", "spacer", "sp", { class = "lt-spacer" }),
-		el("button", "submit", "go", { class = "lt-submit", text = if dt.sending then "Sending…" else "Comment", actions = { click = "dt-send" } }),
+		el("div", "dt-compose-foot", "foot", { class = "lt-dt-compose-foot" }, {
+			el("span", "dt-muted", "hint", { class = "lt-dt-muted", text = if dt.sending then "Sending…" else "" }),
+			el("span", "spacer", "sp", { class = "lt-spacer" }),
+			el("button", "dt-send", "send", {
+				class = "lt-dt-send",
+				aria = "Send comment",
+				title = "Send comment (Ctrl+Enter)",
+				attrs = { ["data-ready"] = flag(string.find(dt.comment.text, "%S") ~= nil and not dt.sending) },
+				actions = { click = "dt-send" },
+			}, { icon("arrow-up") }),
+		}),
 	}))
 
-	local chips: { Node } = {}
+	-- Properties / Labels / Project: the modal's chips as sidebar rows; every chip stays a child
+	-- of "props", where its list is anchored.
+	local groups: { { string } } = { {}, {}, {} }
 	for _, kind in Create.kinds(c) do
-		table.insert(chips, Create.chip(d, kind :: Create.Kind, c))
+		table.insert(groups[if kind == "labels" then 2 elseif kind == "project" or kind == "cycle" then 3 else 1], kind)
 	end
-	local side: { Node } = {
-		el("div", "dt-section", "h", { class = "lt-dt-section", text = "Properties" }),
-		el("div", "dt-props", "props", { class = "lt-dt-props" }, chips),
-	}
+	local props: { Node } = {}
+	for g, name in { "Properties", "Labels", "Project" } do
+		table.insert(props, heading("h" .. g, name))
+		for _, kind in groups[g] do
+			table.insert(props, Create.chip(d, kind :: Create.Kind, c, true))
+		end
+	end
+	local side: { Node } = { el("div", "dt-props", "props", { class = "lt-dt-props" }, props) }
+	if info and #info.related > 0 then
+		local rows = relatedRows(info.related)
+		table.insert(rows, 1, heading("h", "Related"))
+		table.insert(side, el("div", "dt-related", "related", { class = "lt-dt-props" }, rows))
+	end
 
 	table.insert(out, el("div", "detail", "detail", { class = "lt-detail" }, {
 		el("div", "dt-left", "left", { class = "lt-dt-main" }, left),

@@ -114,22 +114,32 @@ outside closes it.
 ## The issue view
 
 Click an issue (or select it with the arrow keys and press `Enter`) to
-open it in place of the board, as Linear's list does:
+open it in place of the board, laid out like Linear's issue page: a centered
+640 px column and a 280 px sidebar.
 
+- **Top bar**: the breadcrumb `TES › Issues › TES-4 title` (click `TES` or
+  `Issues`, or press `Esc`, to go back), **⋯** (the issue menu: ▷ Start in omp,
+  Send to chat ▸, Open in Linear, Copy ID, Copy link, Cancel issue (click twice)),
+  and on the right the issue's place in the board's order (`5 / 11`) with **↓** / **↑**
+  (also `J` / `K`).
+- **Below it**: copy the issue URL, copy the ID, copy the git branch name, and the
+  **▷ Start | ▾** split button (▾: New chat or Send to a session).
 - **Title**: edit it in place. It saves on `Enter`, `Tab`, `Esc` or a click elsewhere.
 - **Description**: shown as Markdown. Click it to edit, and it saves when you leave
-  it (`Esc`, `Ctrl+Enter`, `Tab` or a click elsewhere).
-- **Properties** (right): the same chips and lists as the New issue modal (Status,
-  Priority, Assignee, Labels, Estimate, Project, Cycle, Due date), with the same
-  shortcuts. Each change is written to Linear at once.
-- **Activity**: who created the issue, then the comments, oldest first. Write a
-  comment in the box at the bottom and send it with **Comment** or `Ctrl+Enter`.
-- **Header**: `←` back to the board (`Esc`), **▷ Start**, **Send to chat ▾**,
-  **Open in Linear ↗**, and **Cancel issue** (click twice).
+  it (`Esc`, `Ctrl+Enter`, `Tab` or a click elsewhere). Issue mentions show as
+  links, not Linear's inline chips (Tern's Markdown view takes text only).
+- **Sub-issues**: `▾ Sub-issues` folds the list; the ring counts done ones. Each
+  row shows its status, title, labels and assignee; click it to open it (in Linear
+  when it is not on the board). **+** opens the New issue modal for a sub-issue.
+- **Activity**: who created the issue, State changes, added or removed relations,
+  and comments, oldest first, with relative times (`2h ago`; hover for UTC).
+  Write a comment in the card at the bottom and send it with **↑** or `Ctrl+Enter`.
+- **Sidebar**: Properties (Status, Priority, Assignee, Estimate, Due date), Labels,
+  Project (and Cycle), each a row that opens the New issue modal's list with the
+  same shortcuts and writes to Linear at once; then Related issues (click to open).
 
-`J` / `K` open the next or previous issue in the board's order. Every edit offers
-the usual one-step undo. Times are shown in UTC. Comments can be read and added
-here, not edited or deleted.
+Every edit offers the usual one-step undo. Comments can be read and added here,
+not edited or deleted.
 
 ## Moving an issue
 

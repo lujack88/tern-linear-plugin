@@ -522,9 +522,10 @@ local function loadMeta(state: State)
 	end)
 end
 
--- Opens the "New issue" modal in `stateId`; `template` opens the template list first.
+-- Opens the "New issue" modal in `stateId`; `template` opens the template list first; `parent`
+-- (an issue) makes it a sub-issue of that one.
 -- The choices are fetched on every open (templates and people change), the last ones shown meanwhile.
-local function openDraft(state: State, stateId: string, template: boolean)
+local function openDraft(state: State, stateId: string, template: boolean, parent: any?)
 	local s = setupOf()
 	local key, teamId = state.key, state.teamId
 	if not s or not key or not teamId or s.teamId ~= teamId then
@@ -540,6 +541,7 @@ local function openDraft(state: State, stateId: string, template: boolean)
 	-- A kept draft comes back whole (its own State included).
 	local d = state.kept or Create.new(stateId, if state.mine then s.viewerId else nil)
 	state.kept, d.pop, d.error = nil, nil, nil
+	d.parentId, d.parentIdent = if parent then parent.id else nil, if parent then parent.identifier else nil
 	state.draft, state.lift, state.dropState, state.confirm, state.switcher = d, nil, nil, nil, false
 	if template then
 		Create.openPop(d, "template", state.cx)
@@ -598,6 +600,11 @@ local function submitDraft(state: State)
 			upsert(state, issue)
 			state.edits += 1
 			saveCache(state)
+			-- A sub-issue made from the issue view joins its parent's list there at once.
+			local dt = state.detail
+			if dt and dt.info and input.parentId == dt.id then
+				table.insert(dt.info.children, issue)
+			end
 			local newId = issue.id
 			if cancelId then
 				offer(state, "Created " .. issue.identifier, function()
@@ -660,6 +667,19 @@ local function fresh(state: State): Undo?
 	return if u and tern.now() - u.at <= UNDO_MS then u else nil
 end
 
+-- Where `c` creates: the selected issue's column, else the first unstarted one, else the first.
+local function defaultColumn(cols: { Column }, selIdx: number?): Column?
+	if selIdx then
+		return cols[selIdx]
+	end
+	for _, col in cols do
+		if col.state.type == "unstarted" then
+			return col
+		end
+	end
+	return cols[1]
+end
+
 -- Issue view ----------------------------------------------------------------
 
 -- A write that keeps whatever the issue's pending overlay already shows (a move, a rename).
@@ -668,7 +688,7 @@ local function overlayFor(state: State, id: string): Overlay
 	return if base then table.clone(base) else {}
 end
 
--- Opens issue `id` in place of the board and fetches its description and comments.
+-- Opens issue `id` in place of the board and fetches what the view adds (Linear.detail).
 local function openDetail(state: State, id: string)
 	local issue = find(state, id)
 	local key = state.key
@@ -781,13 +801,6 @@ local function sendToChat(state: State, ids: { string }, chat: Chat)
 		state.sending = true
 		state.cx:render()
 	end)
-end
-
--- Opens the menu of issue `id` straight on its "Send to chat" list, hung under node `anchor`; the
--- open chats are window-only, so the title asks the window half, which answers with "chats".
-local function openChats(state: State, id: string, anchor: string)
-	state.menu = { id = id, ids = { id }, cursor = 1, armed = false, chats = true, anchor = anchor }
-	state.chats, state.listing = nil, true
 end
 
 -- j / k: the next or previous issue in the board's own order.
@@ -912,15 +925,41 @@ local function runDetail(state: State, dt: Detail.Detail, intent: Detail.Intent)
 			state.undo = nil
 			u.revert()
 		end
-	elseif intent == "web" then
-		local issue = find(state, dt.id)
-		if issue and type(issue.url) == "string" then
-			state.cx:open(issue.url)
-		end
 	elseif intent == "start" then
 		startAgent(state, { dt.id })
-	elseif intent == "chat" then
-		openChats(state, dt.id, "main.head.chat")
+	elseif intent == "more" or intent == "split" then
+		-- The issue menu (⋯) or the Start dropdown (▾), hung under its button.
+		local split = intent == "split"
+		state.menu = { id = dt.id, ids = { dt.id }, cursor = 1, armed = false, anchor = if split then "main.tools.split" else "main.head.more", split = split }
+	elseif intent == "copy" then
+		local issue = find(state, dt.id)
+		local what = dt.target
+		local text = if not issue then nil
+			elseif what == "link" then issue.url
+			elseif what == "id" then issue.identifier
+			else dt.info and dt.info.branchName
+		if type(text) == "string" then
+			state.cx:copy(text)
+			state.cx:toast("success", if what == "link" then "Copied the link to " .. issue.identifier else "Copied " .. text)
+		else
+			state.cx:toast("error", "Nothing to copy yet", "The issue is still loading")
+		end
+	elseif intent == "open" then
+		-- A sub-issue or related issue: in place when it is on the board, else in Linear.
+		local id = dt.target
+		if id and find(state, id) then
+			openDetail(state, id)
+		else
+			local url = if id then Detail.urlOf(dt, id) else nil
+			if url then
+				state.cx:open(url)
+			end
+		end
+	elseif intent == "subissue" then
+		local issue, col = find(state, dt.id), defaultColumn(columnsOf(state))
+		if issue and col then
+			openDraft(state, col.state.id, false, issue)
+		end
 	end
 end
 
@@ -1097,7 +1136,8 @@ local function menuAnchor(state: State, m: Menu): string
 end
 
 -- The menu's entries, or the open chats once "Send to chat" is drilled into; several issues get
--- only what applies to all of them.
+-- only what applies to all of them. The issue view's ⋯ leaves out what its sidebar and title
+-- already do (Status, Priority, Assignee, Rename) and Open issue.
 local function menuItems(state: State, m: Menu): { Item }
 	if m.chats then
 		local chats = state.chats
@@ -1114,29 +1154,34 @@ local function menuItems(state: State, m: Menu): { Item }
 		return { { key = "start", text = "▷ New chat" }, { key = "send", text = "Send to a session", sub = true } }
 	end
 	local n = #m.ids
+	local board = state.detail == nil
 	local cancelText = if n > 1 then "Cancel " .. n .. " issues" else "Cancel issue"
-	local items: { Item } = {
+	local items: { Item } = if board then {
 		{ key = "status", text = "Status", sub = true },
 		{ key = "priority", text = "Priority", sub = true },
 		{ key = "assignee", text = "Assignee", sub = true },
 		SEP,
-	}
+	} else {}
 	if n == 1 then
-		table.insert(items, { key = "open", text = "Open issue", hint = "Enter" })
+		if board then
+			table.insert(items, { key = "open", text = "Open issue", hint = "Enter" })
+		end
 		table.insert(items, { key = "start", text = "▷ Start in omp" })
 		table.insert(items, { key = "send", text = "Send to chat", sub = true })
 		table.insert(items, { key = "web", text = "Open in Linear" })
 		table.insert(items, { key = "copy-id", text = "Copy ID" })
 		table.insert(items, { key = "copy-link", text = "Copy link" })
 		table.insert(items, SEP)
-		table.insert(items, { key = "rename", text = "Rename", hint = "R" })
+		if board then
+			table.insert(items, { key = "rename", text = "Rename", hint = "R" })
+		end
 	else
 		table.insert(items, { key = "start", text = "▷ Start in omp" })
 		table.insert(items, { key = "send", text = "Send to chat", sub = true })
 		table.insert(items, { key = "copy-id", text = "Copy IDs" })
 		table.insert(items, SEP)
 	end
-	table.insert(items, { key = "cancel", text = if m.armed then cancelText .. "?" else cancelText, hint = "Del", danger = true })
+	table.insert(items, { key = "cancel", text = if m.armed then cancelText .. "?" else cancelText, hint = if board then "Del" else nil, danger = true })
 	return items
 end
 
@@ -1282,19 +1327,6 @@ local function menuKey(state: State, m: Menu, k: Key, cx: BlockCx): boolean
 end
 
 -- Actions -------------------------------------------------------------------
-
--- Where `c` creates: the selected issue's column, else the first unstarted one, else the first.
-local function defaultColumn(cols: { Column }, selIdx: number?): Column?
-	if selIdx then
-		return cols[selIdx]
-	end
-	for _, col in cols do
-		if col.state.type == "unstarted" then
-			return col
-		end
-	end
-	return cols[1]
-end
 
 -- Keys skip collapsed columns and groups, as if they were empty.
 local function keyColumns(state: State): ({ Column }, number?)
@@ -2149,7 +2181,7 @@ local function bulkBar(state: State, n: number): Node
 end
 
 -- The context menu under its row or card: its entries, the list drilled into with a Back row, or
--- the open chats (with a Back row unless the issue view's header opened them); or the Start dropdown.
+-- the open chats with a Back row; or the Start dropdown.
 local function menuView(state: State, m: Menu): Node
 	local at = menuAnchor(state, m)
 	local c = m.choice
@@ -2160,7 +2192,7 @@ local function menuView(state: State, m: Menu): Node
 	local issue = find(state, m.id)
 	local what = if #m.ids > 1 then #m.ids .. " issues" else (issue and issue.identifier or "")
 	local rows: { Node } = {}
-	if m.chats and (m.split or not m.anchor) then
+	if m.chats then
 		table.insert(rows, back)
 	end
 	table.insert(rows, el("div", "ws-section", "title", { class = "lt-ws-section", text = if m.chats then "Send " .. what .. " to" else what }))
@@ -2212,8 +2244,7 @@ local function dock(state: State): Node?
 	end
 	local kids: { Node } = {}
 	if state.confirm and state.confirm ~= BULK then
-		local again = if state.detail then "Click Cancel issue again to cancel " else "Press Delete again to cancel "
-		table.insert(kids, el("div", "hint", "hint", { class = "lt-hint", text = again .. ident(state.confirm) }))
+		table.insert(kids, el("div", "hint", "hint", { class = "lt-hint", text = "Press Delete again to cancel " .. ident(state.confirm) }))
 	elseif state.lift then
 		local target = Model.stateById(state.states, state.dropState)
 		local to = if target then " to " .. target.name else ""
@@ -2248,11 +2279,19 @@ local function view(state: State): BlockView
 		local stateId, title = Model.effective(opened, state.overlay)
 		Detail.refresh(dt, opened, stateId or opened.state.id, title, state.overlay[dt.id] == nil)
 		local c = ctxOf(state)
+		local list, pos = Model.list(columnsOf(state)), 0
+		for i, it in list do
+			if it.id == dt.id then
+				pos = i
+			end
+		end
+		local m = state.menu
 		return {
-			main = region("main", Detail.view(dt, opened, c, state.confirm == dt.id)),
+			main = region("main", Detail.view(dt, opened, c, pos, #list, if not m then nil elseif m.split then "split" else "more")),
 			dock = dock(state),
-			layer = if dt.d.pop then region("layer", { Create.scrim("cm-unpop"), Create.popover(dt.d, c) })
-				elseif state.menu then region("layer", { Create.scrim("menu-close"), menuView(state, state.menu) })
+			layer = if state.draft then region("layer", Create.view(state.draft, c))
+				elseif dt.d.pop then region("layer", { Create.scrim("cm-unpop"), Create.popover(dt.d, c) })
+				elseif m then region("layer", { Create.scrim("menu-close"), menuView(state, m) })
 				else nil,
 		}
 	elseif dt then
