@@ -392,6 +392,56 @@ local cases: { { name: string, fn: () -> () } } = {
 			check(done == 0 and total == 0, "no children field (old cache)")
 		end,
 	},
+	{
+		name = "epoch and ago",
+		fn = function()
+			check(Model.epoch("1970-01-01T00:00:00.000Z") == 0, "epoch zero")
+			check(Model.epoch("2026-10-22T08:15:30.123Z") == 1792656930, "a 2026 time")
+			check(Model.epoch("2000-02-29T23:59:59Z") == 951868799, "leap day")
+			check(Model.epoch("2024-03-01T00:00:00.000Z") == 1709251200, "after a leap February")
+			check(Model.epoch("yesterday") == nil and Model.epoch(nil) == nil, "not a time")
+			local t = 1792656930
+			local iso = "2026-10-22T08:15:30.000Z"
+			check(Model.ago(iso, t + 30) == "just now", "seconds")
+			check(Model.ago(iso, t + 5 * 60) == "5m ago", "minutes")
+			check(Model.ago(iso, t + 2 * 3600 + 59) == "2h ago", "hours round down")
+			check(Model.ago(iso, t + 3 * 86400) == "3d ago", "days")
+			check(Model.ago(iso, t + 65 * 86400) == "2mo ago", "months")
+			check(Model.ago(iso, t + 800 * 86400) == "2y ago", "years")
+			check(Model.ago(iso, t - 100) == "just now", "clock skew: never negative")
+			check(Model.ago(false, t) == "", "missing time")
+		end,
+	},
+	{
+		name = "timeline",
+		fn = function()
+			check(Model.relationVerb("ar") == "added related issue", "related added (Linear's code)")
+			check(Model.relationVerb("rb") == "removed blocking issue", "blocks removed")
+			check(Model.relationVerb("az") == "added a relation with", "unknown relation")
+			check(Model.relationVerb(nil) == "changed a relation with", "no code")
+			local null: any = {} -- stands for tern.json.null: any non-string, non-matching value
+			local info: any = {
+				createdAt = "2026-10-22T08:00:00.000Z",
+				creator = { name = "Jack Lu" },
+				related = { { type = "related", inverse = false, issue = { identifier = "FIX-39", title = "Sticky footer" } } },
+				history = {
+					{ createdAt = "2026-10-22T08:00:00.000Z", actor = { name = "Jack Lu" }, fromState = { name = "Backlog", type = "backlog" }, toState = { name = "Todo", type = "unstarted" } },
+					{ createdAt = "2026-10-22T09:00:00.000Z", actor = null, botActor = { name = "GitHub" }, relationChanges = { { identifier = "FIX-39", type = "ar" }, { identifier = "FIX-7", type = "ar" } } },
+					{ createdAt = "2026-10-22T07:00:00.000Z", toState = { name = "Todo" } },
+					{ createdAt = null, fromState = { name = "A" }, toState = { name = "B" } },
+				} :: { any },
+				comments = { { id = "c1", body = "hi", createdAt = "2026-10-22T08:30:00.000Z", user = { name = "Ana" } }, { id = "c2", createdAt = null } } :: { any },
+			}
+			local tl = Model.timeline(info)
+			check(#tl == 5, "kept " .. #tl .. " of the entries")
+			check(tl[1].kind == "created" and tl[1].who == "Jack Lu", "creation first")
+			check(tl[2].kind == "state" and tl[2].text == "moved from Backlog to Todo" and tl[2].stateType == "unstarted", "same-time State change after creation")
+			check(tl[3].kind == "comment" and tl[3].who == "Ana", "comment merged by time")
+			check(tl[4].kind == "relation" and tl[4].who == "GitHub" and tl[4].ident == "FIX-39" and tl[4].title == "Sticky footer", "relation with the related title")
+			check(tl[5].ident == "FIX-7" and tl[5].title == nil, "relation to an issue not loaded")
+			check(#Model.timeline({}) == 0, "nothing loaded")
+		end,
+	},
 }
 
 -- Runs every case; returns how many passed and the first failure as "<case>: <msg>".

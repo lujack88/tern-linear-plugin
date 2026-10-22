@@ -618,4 +618,128 @@ function M.chatRow(tabName: string?, title: string, cwd: string, command: string
 	return { label = label, meta = table.concat(parts, " · "), icon = if AGENT_TILES[program] then "tile-" .. program else "tile-agent" }
 end
 
+-- Issue view ------------------------------------------------------------------
+
+-- Seconds since the epoch of Linear's "2026-10-22T08:15:00.000Z" (UTC); nil when not one.
+function M.epoch(iso: any): number?
+	if type(iso) ~= "string" then
+		return nil
+	end
+	local y, mo, d, h, mi, s = string.match(iso, "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)")
+	if not y then
+		return nil
+	end
+	-- Days from the civil date (Howard Hinnant's algorithm), so the local time zone never enters.
+	local yy, m = tonumber(y) :: number, tonumber(mo) :: number
+	if m <= 2 then
+		yy -= 1
+	end
+	local era = yy // 400
+	local yoe = yy - era * 400
+	local doy = (153 * ((m + 9) % 12) + 2) // 5 + (tonumber(d) :: number) - 1
+	local days = era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
+	return days * 86400 + (tonumber(h) :: number) * 3600 + (tonumber(mi) :: number) * 60 + (tonumber(s) :: number)
+end
+
+local AGO_UNITS: { { secs: number, suffix: string } } = {
+	{ secs = 365 * 86400, suffix = "y" },
+	{ secs = 30 * 86400, suffix = "mo" },
+	{ secs = 86400, suffix = "d" },
+	{ secs = 3600, suffix = "h" },
+	{ secs = 60, suffix = "m" },
+}
+
+-- Linear's activity times: "just now", "5m ago", "2h ago", "3d ago", "4mo ago", "2y ago"; "" when
+-- `iso` is not a time. `now` is seconds since the epoch.
+function M.ago(iso: any, now: number): string
+	local t = M.epoch(iso)
+	if not t then
+		return ""
+	end
+	local s = math.max(now - t, 0)
+	for _, unit in AGO_UNITS do
+		if s >= unit.secs then
+			return math.floor(s / unit.secs) .. unit.suffix .. " ago"
+		end
+	end
+	return "just now"
+end
+
+-- A relation change in Linear's history: `type` is "a" (added) or "r" (removed), then the
+-- relation's letter. "ar" (added related) is confirmed against Linear; the other letters follow
+-- the same pattern unconfirmed, and an unknown one still says added/removed.
+local RELATION_NAMES: { [string]: string } = { r = "related issue", b = "blocking issue", d = "duplicate", s = "similar issue" }
+
+function M.relationVerb(code: any): string
+	local op, rel = string.match(if type(code) == "string" then code else "", "^([ar])(%a)$")
+	if not op then
+		return "changed a relation with"
+	end
+	return (if op == "a" then "added " else "removed ") .. (RELATION_NAMES[rel :: string] or "a relation with")
+end
+
+-- One line of the issue view's activity: `who` did `text` at `at` (Linear's ISO time); a State
+-- change carries the new State's type, a relation change the other issue, a comment itself.
+export type Entry = { at: string, kind: "created" | "state" | "relation" | "comment", who: string, text: string, stateType: string?, ident: string?, title: string?, comment: any? }
+
+local function listOf(v: any): { any }
+	return if type(v) == "table" then v else {}
+end
+
+local function nameOf(user: any, bot: any, fallback: string): string
+	if type(user) == "table" and type(user.name) == "string" then
+		return user.name
+	elseif type(bot) == "table" and type(bot.name) == "string" then
+		return bot.name
+	end
+	return fallback
+end
+
+-- The activity of `info` (Linear.detail's answer) oldest first: the creation, State changes,
+-- relation changes and comments; equal times keep that order. Malformed entries are skipped.
+function M.timeline(info: any): { Entry }
+	local out: { Entry } = {}
+	if type(info.createdAt) == "string" then
+		table.insert(out, { at = info.createdAt, kind = "created", who = nameOf(info.creator, nil, "Someone"), text = "created the issue" })
+	end
+	local titles: { [string]: string } = {}
+	for _, r in listOf(info.related) do
+		local other = r.issue
+		if type(other) == "table" and type(other.identifier) == "string" and type(other.title) == "string" then
+			titles[other.identifier] = other.title
+		end
+	end
+	for _, h in listOf(info.history) do
+		if type(h) ~= "table" or type(h.createdAt) ~= "string" then
+			continue
+		end
+		local who = nameOf(h.actor, h.botActor, "Linear")
+		local from, to = h.fromState, h.toState
+		if type(from) == "table" and type(to) == "table" and type(from.name) == "string" and type(to.name) == "string" then
+			table.insert(out, { at = h.createdAt, kind = "state", who = who, text = "moved from " .. from.name .. " to " .. to.name, stateType = if type(to.type) == "string" then to.type else nil })
+		end
+		for _, rc in listOf(h.relationChanges) do
+			if type(rc) == "table" and type(rc.identifier) == "string" then
+				table.insert(out, { at = h.createdAt, kind = "relation", who = who, text = M.relationVerb(rc.type), ident = rc.identifier, title = titles[rc.identifier] })
+			end
+		end
+	end
+	for _, c in listOf(info.comments) do
+		if type(c) == "table" and type(c.createdAt) == "string" then
+			table.insert(out, { at = c.createdAt, kind = "comment", who = nameOf(c.user, c.botActor, "Linear"), text = "", comment = c })
+		end
+	end
+	local order: { [Entry]: number } = {}
+	for i, e in out do
+		order[e] = i
+	end
+	table.sort(out, function(a: Entry, b: Entry): boolean
+		if a.at ~= b.at then
+			return a.at < b.at
+		end
+		return order[a] < order[b]
+	end)
+	return out
+end
+
 return M
