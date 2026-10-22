@@ -11,7 +11,7 @@ local function check(cond: boolean, msg: string)
 	end
 end
 
-type IssueOpts = { title: string?, priority: number?, updatedAt: string?, assignee: string? }
+type IssueOpts = { title: string?, priority: number?, updatedAt: string?, assignee: string?, parent: number? }
 
 local function issue(n: number, stateId: string, opts: IssueOpts?): any
 	local o: IssueOpts = opts or {}
@@ -24,6 +24,7 @@ local function issue(n: number, stateId: string, opts: IssueOpts?): any
 		priority = o.priority,
 		state = { id = stateId },
 		assignee = if o.assignee then { id = o.assignee, name = o.assignee } else nil,
+		parent = if o.parent then { id = "i" .. o.parent, identifier = "ENG-" .. o.parent } else nil,
 	}
 end
 
@@ -286,6 +287,56 @@ local cases: { { name: string, fn: () -> () } } = {
 		end,
 	},
 	{
+		name = "startPromptMany",
+		fn = function()
+			local a = issue(4, "todo", { priority = 2, assignee = "Ada" })
+			local p = Model.startPromptMany({
+				{ issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" },
+				{ issue = issue(11, "todo"), title = "Other", stateName = nil, description = nil },
+			})
+			check(string.find(p, "^Start working on these 2 Linear issues together: ENG%-4, ENG%-11%.") ~= nil, "lead")
+			local i4, i11 = string.find(p, "## ENG-4: Fix it", 1, true), string.find(p, "## ENG-11: Other", 1, true)
+			check(i4 ~= nil and i11 ~= nil and i4 < i11, "sections in order")
+			for _, want in { "- Priority: High", "- Assignee: Ada", "### Description\n\nSteps here", "could not be loaded", "ONE plan", "Do not implement" } do
+				check(string.find(p, want, 1, true) ~= nil, want)
+			end
+			local _, grills = string.gsub(p, "skill://grilling", "")
+			check(grills == 1, "grilling once")
+		end,
+	},
+	{
+		name = "contextPrompt",
+		fn = function()
+			local a = issue(4, "todo", { priority = 2, assignee = "Ada" })
+			local one = Model.contextPrompt({ { issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" } })
+			check(string.find(one, "^Here is Linear issue ENG%-4 for context: Fix it%.\n\n%- Identifier: ENG%-4\n") ~= nil, "lead")
+			check(string.find(one, "## Description\n\nSteps here$") ~= nil, "ends with the description")
+			local many = Model.contextPrompt({
+				{ issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" },
+				{ issue = issue(11, "todo"), title = "Other", stateName = nil, description = nil },
+			})
+			check(string.find(many, "^Here are 2 Linear issues for context: ENG%-4, ENG%-11%.") ~= nil, "many lead")
+			check(string.find(many, "## ENG-11: Other", 1, true) ~= nil and string.find(many, "read it in Linear%)$") ~= nil, "many sections")
+			for _, p in { one, many } do
+				for _, banned in { "grilling", "plan", "Start working" } do
+					check(string.find(p, banned, 1, true) == nil, "no " .. banned)
+				end
+			end
+		end,
+	},
+	{
+		name = "chatRow",
+		fn = function()
+			local r = Model.chatRow("", "omp", "C:\\Users\\me\\fixit-app", "omp --config x.yml", "anthropic/sonnet", "idle")
+			check(r.label == "omp" and r.meta == "fixit-app · sonnet · idle" and r.icon == "tile-omp", "untitled omp")
+			r = Model.chatRow("Fix 25", "omp", "/home/me/app/", "\"C:\\bin\\Claude.exe\"", nil, "waiting_input")
+			check(r.label == "Fix 25" and r.meta == "app · waiting" and r.icon == "tile-claude", "tab name")
+			r = Model.chatRow(nil, "Pull requests", "", "aider", "", "working")
+			check(r.label == "Pull requests" and r.meta == "working" and r.icon == "tile-agent", "pane title")
+			check(Model.chatRow(nil, "", "/srv/api/", nil, nil, "idle").label == "api", "no title")
+		end,
+	},
+	{
 		name = "range",
 		fn = function()
 			local list = { issue(1, "todo"), issue(2, "todo"), issue(3, "prog"), issue(4, "done") }
@@ -294,6 +345,51 @@ local cases: { { name: string, fn: () -> () } } = {
 			check(table.concat(Model.range(list, "i2", "i2"), ",") == "i2", "one")
 			check(table.concat(Model.range(list, "gone", "i3"), ",") == "i3", "anchor gone")
 			check(#Model.range(list, "i1", "gone") == 0, "target gone")
+		end,
+	},
+	{
+		name = "nest",
+		fn = function()
+			-- Sorted by priority: children 3, 5 and grandchild 6 sort above their parents.
+			local cols = Model.columns({
+				issue(1, "todo", { priority = 4 }),
+				issue(2, "todo", { priority = 3 }),
+				issue(3, "todo", { priority = 1, parent = 1 }),
+				issue(4, "todo", { priority = 4, parent = 1 }),
+				issue(5, "todo", { priority = 2, parent = 4 }),
+				issue(6, "todo", { priority = 1, parent = 9 }),
+				issue(7, "prog", { parent = 2 }),
+				issue(8, "todo", { priority = 2, parent = 8 }),
+			}, STATES, {})
+			local sorted = ids(cols[2].issues, "identifier")
+			check(sorted == "ENG-3,ENG-6,ENG-5,ENG-8,ENG-2,ENG-1,ENG-4", "sorted " .. sorted)
+			local rows, tree = Model.nest(cols[2].issues)
+			local order = ids(rows, "identifier")
+			check(order == "ENG-6,ENG-8,ENG-2,ENG-1,ENG-3,ENG-4,ENG-5", "nested " .. order)
+			check(ids(Model.list(cols), "identifier") == order .. ",ENG-7", "list follows nest; parent in another group stays flat")
+			check(tree.i6.depth == 0 and tree.i8.depth == 0 and tree.i1.depth == 0, "parent missing or itself: top level")
+			check(tree.i3.depth == 1 and not tree.i3.last and tree.i4.depth == 1 and tree.i4.last, "children")
+			check(tree.i5.depth == 2 and tree.i5.last and #tree.i5.rails == 1 and tree.i5.rails[1] == false, "grandchild under a last child")
+			local loop = Model.nest({ issue(1, "todo", { parent = 2 }), issue(2, "todo", { parent = 1 }) })
+			check(ids(loop, "identifier") == "ENG-1,ENG-2", "parent loop still shown")
+			local deep = { issue(1, "todo") }
+			for n = 2, 6 do
+				table.insert(deep, issue(n, "todo", { parent = n - 1 }))
+			end
+			local _, dt = Model.nest(deep)
+			check(dt.i4.depth == 3 and dt.i6.depth == 3 and #dt.i6.rails == 2, "depth capped")
+		end,
+	},
+	{
+		name = "progress",
+		fn = function()
+			local function kid(t: string): any
+				return { id = t, state = { type = t } }
+			end
+			local done, total = Model.progress({ children = { nodes = { kid("completed"), kid("canceled"), kid("started"), kid("backlog") } } })
+			check(done == 2 and total == 4, "done " .. done .. "/" .. total)
+			done, total = Model.progress(issue(1, "todo"))
+			check(done == 0 and total == 0, "no children field (old cache)")
 		end,
 	},
 }

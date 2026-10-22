@@ -104,15 +104,93 @@ function M.columns(issues: { any }, states: { any }, overlay: { [string]: Overla
 	return cols
 end
 
--- The List View's rows top to bottom: every column's issues, groups in board order.
+-- Deepest indentation of a sub-issue row; deeper descendants stay at this depth.
+local MAX_DEPTH = 3
+
+-- A List row's place in the sub-issue tree: `depth` 0 is top level; `last` marks its parent's last
+-- shown child (the rounded elbow); `rails[k]` (k < depth) whether the connector line of the
+-- ancestor at depth k runs on past this row to a later sibling.
+export type Tree = { depth: number, last: boolean, rails: { boolean } }
+
+local function parentId(issue: any): string?
+	local p = issue.parent
+	return if type(p) == "table" and type(p.id) == "string" then p.id else nil
+end
+
+-- One List group's rows: `issues` (sorted) with every sub-issue whose parent is in the same group
+-- moved right after that parent, siblings in their sorted order, recursively; and each id's Tree.
+-- A sub-issue whose parent is not in `issues` stays where it sorted, at depth 0.
+function M.nest(issues: { any }): ({ any }, { [string]: Tree })
+	local here: { [string]: boolean } = {}
+	for _, issue in issues do
+		here[issue.id] = true
+	end
+	local kids: { [string]: { any } } = {}
+	local roots: { any } = {}
+	for _, issue in issues do
+		local p = parentId(issue)
+		if p and p ~= issue.id and here[p] then
+			kids[p] = kids[p] or {}
+			table.insert(kids[p], issue)
+		else
+			table.insert(roots, issue)
+		end
+	end
+	local out: { any } = {}
+	local tree: { [string]: Tree } = {}
+	local function visit(issue: any, depth: number, last: boolean, rails: { boolean })
+		if tree[issue.id] then
+			return
+		end
+		tree[issue.id] = { depth = math.min(depth, MAX_DEPTH), last = last, rails = rails }
+		table.insert(out, issue)
+		local list = kids[issue.id]
+		if not list then
+			return
+		end
+		local sub = table.clone(rails)
+		if depth >= 1 and depth < MAX_DEPTH then
+			table.insert(sub, not last)
+		end
+		for i, c in list do
+			visit(c, depth + 1, i == #list, sub)
+		end
+	end
+	for _, issue in roots do
+		visit(issue, 0, false, {})
+	end
+	-- A parent loop has no root: start it at its first member rather than drop it.
+	for _, issue in issues do
+		visit(issue, 0, false, {})
+	end
+	return out, tree
+end
+
+-- The List View's rows top to bottom: every column's issues nested, groups in board order.
 function M.list(cols: { Column }): { any }
 	local out: { any } = {}
 	for _, col in cols do
-		for _, issue in col.issues do
+		for _, issue in (M.nest(col.issues)) do
 			table.insert(out, issue)
 		end
 	end
 	return out
+end
+
+-- State types whose sub-issues count as done: canceled ones too, as nothing is left to do on them.
+local CLOSED = { completed = true, canceled = true, duplicate = true }
+
+-- An issue's sub-issue progress: done and total (0 without sub-issues; Linear sends up to 50).
+function M.progress(issue: any): (number, number)
+	local c = issue.children
+	local nodes = if type(c) == "table" and type(c.nodes) == "table" then c.nodes else {}
+	local done = 0
+	for _, n in nodes do
+		if type(n.state) == "table" and CLOSED[n.state.type] then
+			done += 1
+		end
+	end
+	return done, #nodes
 end
 
 -- The ids of `list` from `a` to `b` inclusive, in list order either way (a Shift-click range);
@@ -237,6 +315,11 @@ M.ADD_TITLE = "Linear · adding a workspace…"
 -- The board's pane title while it asks the window half to start an omp chat on the issue in kv
 -- `linear-todo.start`: only the window can open agents.
 M.START_TITLE = "Linear · starting an omp chat…"
+
+-- "Send to chat": the board asks the window half for the open chats (it answers with
+-- `{act = "chats"}`), then to send kv `linear-todo.send` ({pane, label, prompt}) to one of them.
+M.CHATS_TITLE = "Linear · listing chats…"
+M.SEND_TITLE = "Linear · sending to a chat…"
 
 -- Create modal ----------------------------------------------------------------
 
@@ -435,8 +518,10 @@ function M.cleanRewrite(out: string): string?
 	return if s == "" then nil else s
 end
 
--- The first message of an omp chat started on `issue`; `description` nil means it could not be loaded.
-function M.startPrompt(issue: any, title: string, stateName: string?, description: string?): string
+local GRILL = "Load and follow the `grilling` skill (skill://grilling): interrogate me about the approach before anything is implemented.\n\n"
+
+-- URL, State, Priority, Assignee and Labels of `issue`, one "- " line each.
+local function startFacts(issue: any, stateName: string?): string
 	local prio = M.PRIORITIES[1].label
 	for _, p in M.PRIORITIES do
 		if p.value == issue.priority then
@@ -448,21 +533,89 @@ function M.startPrompt(issue: any, title: string, stateName: string?, descriptio
 	for _, l in (if type(issue.labels) == "table" and type(issue.labels.nodes) == "table" then issue.labels.nodes else {}) do
 		table.insert(labels, l.name)
 	end
-	local desc = if description == nil
-		then "(the description could not be loaded; read it in Linear)"
-		elseif string.match(description, "%S") then description
-		else "(no description)"
-	return "Start working on Linear issue " .. issue.identifier .. ": " .. title .. ".\n\n"
-		.. "Load and follow the `grilling` skill (skill://grilling): interrogate me about the approach before anything is implemented.\n\n"
-		.. "- Identifier: " .. issue.identifier .. "\n"
-		.. "- Title: " .. title .. "\n"
-		.. "- URL: " .. tostring(issue.url) .. "\n"
+	return "- URL: " .. tostring(issue.url) .. "\n"
 		.. "- State: " .. (stateName or "unknown") .. "\n"
 		.. "- Priority: " .. prio .. "\n"
 		.. "- Assignee: " .. (if type(a) == "table" and a.name then a.name else "unassigned") .. "\n"
-		.. "- Labels: " .. (if #labels > 0 then table.concat(labels, ", ") else "none") .. "\n\n"
-		.. "## Description\n\n" .. desc .. "\n\n"
+		.. "- Labels: " .. (if #labels > 0 then table.concat(labels, ", ") else "none") .. "\n"
+end
+
+local function startDescription(description: string?): string
+	return if description == nil
+		then "(the description could not be loaded; read it in Linear)"
+		elseif string.match(description, "%S") then description
+		else "(no description)"
+end
+
+-- One issue's fields and description: the body of a single-issue message.
+local function issueBody(issue: any, title: string, stateName: string?, description: string?): string
+	return "- Identifier: " .. issue.identifier .. "\n"
+		.. "- Title: " .. title .. "\n"
+		.. startFacts(issue, stateName) .. "\n"
+		.. "## Description\n\n" .. startDescription(description)
+end
+
+-- The first message of an omp chat started on `issue`; `description` nil means it could not be loaded.
+function M.startPrompt(issue: any, title: string, stateName: string?, description: string?): string
+	return "Start working on Linear issue " .. issue.identifier .. ": " .. title .. ".\n\n"
+		.. GRILL
+		.. issueBody(issue, title, stateName, description) .. "\n\n"
 		.. "Read the relevant code, grill me per the grilling skill, then write the plan. Do not implement anything until I approve the plan."
+end
+
+-- One issue of a multi-issue message; `description` nil means it could not be loaded.
+export type StartEntry = { issue: any, title: string, stateName: string?, description: string? }
+
+-- "TES-4, TES-11" and one "## TES-4: title" section per entry, each ending in a blank line.
+local function sections(entries: { StartEntry }): (string, string)
+	local idents, parts = {}, {}
+	for _, e in entries do
+		table.insert(idents, e.issue.identifier)
+		table.insert(parts, "## " .. e.issue.identifier .. ": " .. e.title .. "\n\n"
+			.. startFacts(e.issue, e.stateName) .. "\n"
+			.. "### Description\n\n" .. startDescription(e.description) .. "\n\n")
+	end
+	return table.concat(idents, ", "), table.concat(parts)
+end
+
+-- The first message of one omp chat started on all of `entries`, in their order.
+function M.startPromptMany(entries: { StartEntry }): string
+	local idents, parts = sections(entries)
+	return "Start working on these " .. #entries .. " Linear issues together: " .. idents .. ".\n\n"
+		.. GRILL
+		.. parts
+		.. "Read the relevant code, grill me per the grilling skill, then write ONE plan covering all of them. Do not implement anything until I approve the plan."
+end
+
+-- "Send to chat": `entries` handed to an open chat as context, with no instruction.
+function M.contextPrompt(entries: { StartEntry }): string
+	if #entries == 1 then
+		local e = entries[1]
+		return "Here is Linear issue " .. e.issue.identifier .. " for context: " .. e.title .. ".\n\n"
+			.. issueBody(e.issue, e.title, e.stateName, e.description)
+	end
+	local idents, parts = sections(entries)
+	return "Here are " .. #entries .. " Linear issues for context: " .. idents .. ".\n\n" .. (string.gsub(parts, "\n+$", ""))
+end
+
+-- Agents with their own tile icon in Tern's tab list; others get the generic agent tile.
+local AGENT_TILES = { omp = true, claude = true, codex = true, hermes = true }
+
+-- A "Send to chat" target as Tern's tab list shows it: the tab's name, else the pane title (the
+-- program's name, e.g. "omp", when the chat is untitled), else the cwd's last folder; `meta` is that
+-- folder, the model (without its provider) and the agent's state; `icon` the program's tile icon.
+function M.chatRow(tabName: string?, title: string, cwd: string, command: string?, model: string?, agentState: string): { label: string, meta: string, icon: string }
+	local program = string.match(command or "", "^%s*\"?([^\"%s]+)") or ""
+	program = string.lower((string.gsub(string.match(program, "[^/\\]+$") or "", "%.exe$", "")))
+	local dir = (string.gsub(cwd, "[/\\]+$", ""))
+	dir = string.match(dir, "[^/\\]+$") or cwd
+	local label = if tabName and tabName ~= "" then tabName elseif title ~= "" then title elseif program ~= "" then program else dir
+	local parts = if dir ~= "" then { dir } else {}
+	if model and model ~= "" then
+		table.insert(parts, string.match(model, "[^/]+$") or model)
+	end
+	table.insert(parts, (string.gsub(agentState, "_input$", "")))
+	return { label = label, meta = table.concat(parts, " · "), icon = if AGENT_TILES[program] then "tile-" .. program else "tile-agent" }
 end
 
 return M

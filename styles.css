@@ -6,6 +6,7 @@
 	--lt-line: rgb(from var(--tv-fg) r g b / 8%);
 	--lt-line-hover: rgb(from var(--tv-fg) r g b / 16%);
 	--lt-muted: var(--sf-c-muted, rgb(from var(--tv-fg) r g b / 55%));
+	--lt-tree: rgb(from var(--tv-fg) r g b / 22%);
 	--lt-red: #eb5757;
 	/* --sf-accent is unset in some panes (it resolved to nothing in a chat-reader cover); --sf-c-accent is set there. */
 	--lt-accent: var(--sf-c-accent, var(--sf-accent));
@@ -22,6 +23,44 @@
 		color: inherit;
 		font: inherit;
 		cursor: pointer;
+	}
+
+	/* Start in omp: always shown, unlike the hover-only controls; the dock's bulk bar has one too. */
+	& .lt-start {
+		flex: 0 0 auto;
+		height: 24px;
+		padding: 0 10px;
+		border: 1px solid rgb(from var(--lt-accent) r g b / 50%);
+		border-radius: 6px;
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--lt-accent);
+		white-space: nowrap;
+	}
+
+	& .lt-start:hover,
+	& .lt-start[data-open='true'] {
+		background: rgb(from var(--lt-accent) r g b / 12%);
+	}
+
+	/* A List row's ▷ Start | ▾: one pill, the main segment's right border the 1px divider. */
+	& .lt-split {
+		flex: 0 0 auto;
+		display: flex;
+		flex-direction: row;
+		align-items: stretch;
+		gap: 0;
+	}
+
+	& .lt-split .lt-split-main {
+		padding: 0 12px;
+		border-radius: 6px 0 0 6px;
+	}
+
+	& .lt-split .lt-split-caret {
+		padding: 0 6px;
+		border-left-width: 0;
+		border-radius: 0 6px 6px 0;
 	}
 }
 
@@ -293,7 +332,8 @@
 	& .lt-row:hover .lt-act,
 	& .lt-card[data-mark='pick'] .lt-grip,
 	& .lt-row[data-mark='pick'] .lt-grip,
-	& .lt-act[data-confirm='true'] {
+	& .lt-act[data-confirm='true'],
+	& .lt-act[data-open='true'] {
 		opacity: 1;
 	}
 
@@ -329,23 +369,6 @@
 	}
 
 	& .lt-card[data-picked='true'] {
-		background: rgb(from var(--lt-accent) r g b / 12%);
-	}
-
-	/* Start in omp: always shown, unlike the hover-only controls. */
-	& .lt-start {
-		flex: 0 0 auto;
-		height: 24px;
-		padding: 0 10px;
-		border: 1px solid rgb(from var(--lt-accent) r g b / 50%);
-		border-radius: 6px;
-		font-size: 12px;
-		font-weight: 500;
-		color: var(--lt-accent);
-		white-space: nowrap;
-	}
-
-	& .lt-start:hover {
 		background: rgb(from var(--lt-accent) r g b / 12%);
 	}
 
@@ -615,13 +638,125 @@
 		min-width: 56px;
 	}
 
-	& .lt-row .lt-title,
+	& .lt-row .lt-title {
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+
 	& .lt-row > [data-role='linear-todo.input'] {
 		flex: 1 1 0;
 		min-width: 0;
 		overflow: hidden;
 		white-space: nowrap;
 		text-overflow: ellipsis;
+	}
+
+	/* Sub-issues: 24px of indent per level after the tick box. Each connector line runs 6px into
+	   its level's cell, under the parent's priority icon; -6px pulls the row's 8px gap to 2px. */
+	& .lt-row {
+		position: relative;
+	}
+
+	& .lt-tree {
+		display: flex;
+		flex-direction: row;
+		flex: 0 0 auto;
+		align-self: stretch;
+		margin-right: -6px;
+		margin-bottom: -1px;
+	}
+
+	& .lt-rail {
+		flex: 0 0 18px;
+		margin-left: 6px;
+	}
+
+	& .lt-rail[data-on='true'],
+	& .lt-elbow-top,
+	& .lt-elbow-stem,
+	& .lt-stub {
+		border-left: 1px solid var(--lt-tree);
+	}
+
+	& .lt-elbow {
+		display: flex;
+		flex-direction: column;
+		flex: 0 0 16px;
+		margin-left: 6px;
+	}
+
+	& .lt-elbow-top {
+		flex: 1 1 0;
+		border-bottom: 1px solid var(--lt-tree);
+	}
+
+	& .lt-elbow-stem {
+		flex: 1 1 0;
+	}
+
+	& .lt-elbow[data-last='true'] .lt-elbow-top {
+		border-bottom-left-radius: 6px;
+	}
+
+	& .lt-elbow[data-last='true'] .lt-elbow-stem {
+		border-left: 0;
+	}
+
+	/* A parent's line from under its priority icon to the row's bottom edge. */
+	& .lt-stub {
+		position: absolute;
+		top: 26px;
+		bottom: -1px;
+		left: 42px;
+		width: 0;
+	}
+
+	& .lt-row[data-depth='1'] .lt-stub { left: 66px; }
+	& .lt-row[data-depth='2'] .lt-stub { left: 90px; }
+	& .lt-row[data-depth='3'] .lt-stub { left: 114px; }
+
+	/* Sub-issue progress pill: a ring (empty, half, full) and done/total. */
+	& .lt-progress {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		flex: 0 0 auto;
+		gap: 4px;
+		height: 18px;
+		padding: 0 6px;
+		border: 1px solid rgb(from var(--tv-fg) r g b / 12%);
+		border-radius: 999px;
+		font-family: var(--tv-font);
+		font-variant-numeric: tabular-nums;
+		font-size: 11.5px;
+		color: var(--lt-muted);
+	}
+
+	& .lt-ring {
+		box-sizing: border-box;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		border: 1.5px solid rgb(from var(--tv-fg) r g b / 35%);
+	}
+
+	& .lt-progress[data-p='part'] .lt-ring {
+		border-color: #5e6ad2;
+		background: linear-gradient(90deg, #5e6ad2 50%, transparent 50%);
+	}
+
+	& .lt-progress[data-p='done'] .lt-ring {
+		border-color: #5e6ad2;
+		background: #5e6ad2;
+	}
+
+	& .lt-parent {
+		font-size: 11.5px;
+		color: var(--lt-muted);
+		white-space: nowrap;
 	}
 }
 
@@ -878,6 +1013,43 @@
 	& .lt-pop-hint {
 		font-size: 12px;
 		color: var(--lt-muted);
+	}
+
+	/* "Send to chat" rows: the tab list's icon, the title over a muted folder · model · state line. */
+	& .lt-pop-row[data-chat='true'] {
+		height: auto;
+		min-height: 40px;
+		padding: 4px 8px;
+	}
+
+	& .lt-chat-text {
+		display: flex;
+		flex: 1 1 0;
+		flex-direction: column;
+		min-width: 0;
+	}
+
+	& .lt-chat-text .lt-pop-label {
+		flex: none;
+	}
+
+	& .lt-chat-meta {
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+		font-size: 11.5px;
+		color: var(--lt-muted);
+	}
+
+	/* A chat at work or waiting for input: an accent dot before its meta line. */
+	& .lt-pop-row[data-state='working'] .lt-chat-meta::before,
+	& .lt-pop-row[data-state='waiting_input'] .lt-chat-meta::before {
+		content: "● ";
+		color: var(--lt-accent);
+	}
+
+	& .lt-pop-row[data-state='waiting_input'] .lt-chat-meta {
+		color: var(--lt-accent);
 	}
 
 	& .lt-pop-on {

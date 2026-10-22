@@ -61,7 +61,10 @@ error.
   (at least 240 px each) do not fit.
 - **List**: one group per State, headed by its name and count, with compact rows
   (priority, identifier, title, labels, estimate, assignee). `↑`/`↓` run on
-  across groups.
+  across groups. Sub-issues nest under their parent when both are in the same
+  group, indented with connector lines as in Linear's List view; a parent shows
+  a `done/total` sub-issue pill (Kanban cards show it too, and sub-issue cards a
+  `↳ FIX-49` parent hint).
 
 Each column (Kanban) or group (List) collapses with the `▾` before its name, and
 expands with `▸`; collapsed ones keep their count, and the arrow keys skip them.
@@ -70,26 +73,39 @@ The View, the Mine toggle and the collapsed columns are remembered.
 
 ## Clicking an issue
 
-- **Click** a row or card: its menu opens under it (below).
-- **Double-click**, or select it with the arrow keys and press `Enter`: the issue
-  view opens.
+- **Click** a row or card, or select it with the arrow keys and press `Enter`:
+  the issue view opens.
+- **⋮** (at the right end of the row's or card's controls, shown on hover), or
+  `m` on the keyboard-selected issue: its menu opens under it (below).
 - While an issue is lifted for a move, a click drops it instead.
 
-The checkbox, `⠿`, `✎`, `✕` and `▷` keep their own actions.
+The checkbox, `⠿`, `✎`, `✕`, `⋮`, `▷` and `▾` keep their own actions.
 
 ### The issue menu
 
-As in Linear's right-click menu (Tern blocks get no right-click, so a plain click
-opens it; `m` opens it for the keyboard-selected issue):
+As in Linear's right-click menu (Tern blocks get no right-click, so `⋮` or `m`
+opens it):
 
 - **Status ▸**, **Priority ▸**, **Assignee ▸**: open the New issue modal's list in
   the menu, the current value checked, with a filter field and a **‹ Back** row.
-- **Open issue** (`Enter`), **▷ Start in omp**, **Open in Linear**, **Copy ID**,
-  **Copy link**, **Rename** (`R`), and **Cancel issue** (click twice).
+- **Open issue** (`Enter`), **▷ Start in omp**, **Send to chat ▸**, **Open in
+  Linear**, **Copy ID**, **Copy link**, **Rename** (`R`), and **Cancel issue**
+  (click twice).
 
-When the clicked issue is one of several selected, the menu acts on the whole
+When the issue is one of several selected, the menu acts on the whole
 selection: its title says how many, and it offers Status, Priority, Assignee,
-**Copy IDs** and **Cancel N issues**. Every change offers one undo.
+**▷ Start in omp**, **Send to chat ▸**, **Copy IDs** and **Cancel N issues**.
+Every change offers one undo.
+
+**Send to chat ▸** lists Carly and every open agent chat in Tern, each with the
+icon and title Tern's tab list shows (the tab's name, else the pane title, e.g.
+`omp` for an untitled chat) over a muted line with its folder, model and state,
+for example `fixit-app · sonnet · idle`; a working or waiting chat gets an
+accent dot. Pick one to send it the issue
+(or the selection, up to 10): a message that starts "Here is Linear issue
+TES-4 for context:" with the same fields and description as Start, but no
+instruction. A busy chat queues it. The chat's pane is shown; Carly opens with
+the message.
 
 Keys while it is open: `↑`/`↓` (or `K`/`J`) move, `Enter` runs, `→`/`Enter` opens
 a ▸ list, `←` (or `Backspace` in an empty filter) goes back, `Esc` closes. A click
@@ -97,7 +113,7 @@ outside closes it.
 
 ## The issue view
 
-Double-click an issue (or select it with the arrow keys and press `Enter`) to
+Click an issue (or select it with the arrow keys and press `Enter`) to
 open it in place of the board, as Linear's list does:
 
 - **Title**: edit it in place. It saves on `Enter`, `Tab`, `Esc` or a click elsewhere.
@@ -108,8 +124,8 @@ open it in place of the board, as Linear's list does:
   shortcuts. Each change is written to Linear at once.
 - **Activity**: who created the issue, then the comments, oldest first. Write a
   comment in the box at the bottom and send it with **Comment** or `Ctrl+Enter`.
-- **Header**: `←` back to the board (`Esc`), **▷ Start**, **Open in Linear ↗**,
-  and **Cancel issue** (click twice).
+- **Header**: `←` back to the board (`Esc`), **▷ Start**, **Send to chat ▾**,
+  **Open in Linear ↗**, and **Cancel issue** (click twice).
 
 `J` / `K` open the next or previous issue in the board's order. Every edit offers
 the usual one-step undo. Times are shown in UTC. Comments can be read and added
@@ -169,7 +185,8 @@ untouched keeps the template's own formatting.
 | Action | Key |
 | --- | --- |
 | Rename | click ✎, or `r` / `F2` |
-| Start in omp | click **▷ Start** on a row or in the issue view, or the **▷** at a card's bottom-right |
+| Start in omp | click **▷ Start** on a row or in the issue view; on a card, click the **▷** at its bottom-right, then **▷ New chat** |
+| Start or send to a session | click a row's **▾** (the right part of its **▷ Start** split button) or a card's **▷**: **▷ New chat**, or **Send to a session ▸** (the **Send to chat ▸** list) |
 
 Start opens a new omp chat in plan mode. Its first message is the issue:
 identifier, title, URL, State, priority, assignee, labels and description. It
@@ -193,8 +210,8 @@ cancels the new issue, a cancel restores the previous State.
 | Clear the selection | `Esc`, or `×` in the bar |
 
 The checkbox shows when you hover an issue, and on every issue while any is
-selected; selected issues are tinted. A click on the rest of a selected row or
-card opens the issue menu for the whole selection. The selection is not saved;
+selected; selected issues are tinted. `⋮` (or `m`) on a selected row or card
+opens the issue menu for the whole selection. The selection is not saved;
 issues that are canceled, synced away, or hidden by Mine leave it, and switching
 workspaces clears it.
 
@@ -204,6 +221,10 @@ While at least one issue is selected, a bar at the bottom shows how many and:
   (`↑`/`↓`, `Enter`, `Esc`); the pick is written to every selected issue.
 - **Cancel issues**: click twice (**Cancel N?**); cancels every selected issue
   and clears the selection.
+- **▷ Start** (2 or more selected): opens one new omp chat on all of them, in
+  the board's order, up to 10 issues. Its first message lists each issue's
+  fields and description and asks for one plan covering all of them. The
+  selection stays.
 
 One undo (the undo bar or `Ctrl+Z`) reverts the whole bulk edit. The selection
 stays after a Status, Priority or Assignee change, as in Linear.

@@ -1,6 +1,6 @@
 # Sync model
 
-How version 0.7.0 keeps the Board in step with Linear.
+How version 0.8.0 keeps the Board in step with Linear.
 
 ## Host and window halves
 
@@ -33,6 +33,26 @@ chat on it in the board pane's cwd (else `~`). The command is
 `omp --config <plugin dir>/plan-mode.yml`: omp has no plan-mode flag, and that
 overlay sets `plan.defaultOnStartup` for this chat only. A failed description
 fetch still starts the chat; the prompt says the description could not be loaded.
+The bulk bar's **▷ Start** and the selection menu's **▷ Start in omp** use the same
+path for up to 10 issues: the descriptions load in parallel, and once all have
+answered the board writes one `Model.startPromptMany` message, so the window half
+is unchanged.
+
+**Send to chat** uses the same title channel twice, because the open chats
+(`cx.agents:list`), `cx.agents:ask`, `cx:ask_carly` and `cx.layout:focus` are all
+window-only:
+
+1. Opening the list sets the title to `Model.CHATS_TITLE`. The window answers with
+   `{act = "chats", chats = {{pane, label, meta, icon, state}, …}}` straight in the
+   event (no kv): Carly first (`pane = "carly"`, icon `tile-carly`, no meta), then
+   every agent that has not exited, named by `Model.chatRow` as the tab list names
+   it (`label`) with its folder · model · state (`meta`) and Tern tile icon
+   (`tile-omp`, `tile-claude`, …). Until it answers the list reads "Loading chats…".
+2. Picking a chat loads the descriptions as Start does, writes
+   `{pane, label, prompt = Model.contextPrompt(…)}` to kv `linear-todo.send` and
+   sets the title to `Model.SEND_TITLE`. The window answers `{act = "sent"}`, takes
+   and clears the kv entry, and calls `cx.agents:ask` (then focuses that pane and
+   toasts) or `cx:ask_carly`. A failed send toasts the error.
 
 The window injects again on `window_start`, 300 ms after load (a reload does not
 fire `window_start`), after adding or switching a workspace, and up to 3 s after
@@ -73,7 +93,9 @@ One sync is two steps:
 2. The team's issues, one request per page, `orderBy: updatedAt`, filtered to
    `team: { id: { eq: teamId } }`: every open State (`backlog`, `unstarted`,
    `started`), plus issues completed within the last 14 days. Up to 10 pages of
-   100; more is refused rather than truncated.
+   100; more is refused rather than truncated. Each issue carries its `parent
+   { id identifier }` and up to 50 `children { nodes { id state { type } } }`
+   for sub-issue nesting and progress.
 
 Both are cached together. The Mine toggle filters on `assignee.id == viewerId`
 on the board and makes no request.
@@ -140,7 +162,7 @@ An edit is applied to the board's overlay immediately, keyed by issue id:
 - `model.effective(issue, overlay)` merges the overlay over the fetched issue.
 - `model.columns(issues, states, overlay, opts)` regroups and sorts the result,
   one column per visible State; `model.list(columns)` flattens it into the List
-  View's row order.
+  View's row order, each group nested by `model.nest` (see Ordering).
 
 When Linear confirms, the returned issue replaces the fetched one and the
 overlay entry is dropped. When the call fails, the overlay entry is discarded
@@ -169,6 +191,18 @@ then Linear's State `position`. Inside a column, issues sort by priority (Urgent
 1, High 2, Medium 3, Low 4, none last), then `updatedAt` descending, then
 identifier ascending. This version does not read or write Linear's manual sort
 order (`sortOrder`), so a move never reorders an issue within a column.
+
+In the List View, `model.nest` then moves each sub-issue whose parent is in the
+same group right after its parent, siblings in that order, recursively; rows are
+indented one level per depth, capped at 3. A sub-issue whose parent is in another
+group, hidden by Mine, canceled or not fetched stays where it sorted, at the top
+level. Kanban columns keep the plain order. Caches from before these fields load
+as flat boards until the next sync.
+
+A parent's progress pill counts its sub-issues as done when their State type is
+`completed`, `canceled` or `duplicate`: nothing is left to do on them. It reads
+the parent's own `children` from the last sync, so a sub-issue moved on the board
+updates its parent's pill only after the next sync.
 
 ## "Delete" means cancel
 

@@ -376,20 +376,86 @@ local function upgrade(cx: WindowCx)
 	end)
 end
 
--- The board's "Add workspace…" and "Start": it sets its title to Model.ADD_TITLE or
--- Model.START_TITLE, the window takes that as the request, acknowledges it (the title reverts)
--- and runs the key prompt, or opens an omp chat on the prompt the board left in kv `start`.
+-- "Send to chat" targets: Carly, then every open agent chat ({pane, label, meta, icon, state}),
+-- named as Tern's tab list names them (Model.chatRow).
+local function chatList(cx: WindowCx): { { [string]: any } }
+	local tabNames: { [number]: string } = {}
+	for _, t in cx.session:tabs() do
+		tabNames[t.id] = t.name or ""
+	end
+	local panes: { [number]: PaneInfo } = {}
+	for _, p in cx.session:panes() do
+		panes[p.pane] = p
+	end
+	local out: { { [string]: any } } = { { pane = "carly", label = "Carly", icon = "tile-carly" } }
+	-- Unknown optional fields are tern.json.null.
+	local function str(v: any): string?
+		return if type(v) == "string" then v else nil
+	end
+	local ok, agents = pcall(cx.agents.list, cx.agents)
+	if not ok then
+		return out
+	end
+	for _, a in agents :: { AgentBlock } do
+		if a.state ~= "exited" then
+			local p = panes[a.pane]
+			local row: { [string]: any } = Model.chatRow(p and p.tab and tabNames[p.tab], if p then p.title else "", str(a.cwd) or "", str(a.command), str(a.model), a.state)
+			row.pane, row.state = a.pane, a.state
+			table.insert(out, row)
+		end
+	end
+	return out
+end
+
+-- Puts `prompt` into chat `pane` (a pane id, or "carly") and shows it.
+local function sendTo(cx: WindowCx, pane: number | string, label: string, prompt: string)
+	local ok, err = pcall(function()
+		if pane == "carly" then
+			cx:ask_carly(prompt)
+		else
+			cx.agents:ask(pane :: number, prompt)
+		end
+	end)
+	if not ok then
+		cx:toast("error", "Could not send to " .. label, tostring(err))
+		return
+	end
+	-- Carly's own panel opens on ask_carly; an agent pane needs revealing.
+	if pane ~= "carly" then
+		pcall(function()
+			cx.layout:focus(pane :: number)
+		end)
+		cx:toast("success", "Sent to " .. label)
+	end
+end
+
+-- The board's "Add workspace…", "Start" and "Send to chat": it sets its title to one of Model's
+-- *_TITLE sentinels, the window takes that as the request and acknowledges it (the title reverts),
+-- then runs the key prompt, opens an omp chat on kv `start`, lists the open chats, or sends kv
+-- `send` to one of them.
 tern.on("title", function(ev: TitleEvent, cx: WindowCx)
-	if ev.title ~= Model.ADD_TITLE and ev.title ~= Model.START_TITLE then
+	local t = ev.title
+	if t ~= Model.ADD_TITLE and t ~= Model.START_TITLE and t ~= Model.CHATS_TITLE and t ~= Model.SEND_TITLE then
 		return
 	end
 	local panes = boardPanes(cx)
 	if not table.find(panes, ev.pane) then
 		return
 	end
-	if ev.title == Model.ADD_TITLE then
+	if t == Model.ADD_TITLE then
 		send(cx, panes, { ev = "action", act = "ws-added" })
 		addWorkspace(cx)
+		return
+	elseif t == Model.CHATS_TITLE then
+		send(cx, panes, { ev = "action", act = "chats", chats = chatList(cx) })
+		return
+	elseif t == Model.SEND_TITLE then
+		send(cx, panes, { ev = "action", act = "sent" })
+		local s = kvGet(P .. "send")
+		kvSet(P .. "send", nil)
+		if type(s) == "table" and type(s.prompt) == "string" and (type(s.pane) == "number" or s.pane == "carly") then
+			sendTo(cx, s.pane, tostring(s.label), s.prompt)
+		end
 		return
 	end
 	send(cx, panes, { ev = "action", act = "started" })

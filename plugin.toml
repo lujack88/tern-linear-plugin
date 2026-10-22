@@ -1,7 +1,7 @@
 schema = 1
 id = "linear-todo"
 name = "Linear Taskboard"
-version = "0.7.0"
+version = "0.8.0"
 description = "A Linear-style Kanban and List board of a Linear team's issues, across your Linear workspaces."
 icon = "check"
 host = "host.luau"

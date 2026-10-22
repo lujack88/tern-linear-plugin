@@ -5,7 +5,7 @@ local M = {}
 
 local ENDPOINT = "https://api.linear.app/graphql"
 
-local ISSUE_FIELDS = "id identifier title url updatedAt priority estimate team { id key } state { id name type } assignee { id name displayName } labels(first: 50) { nodes { id name color } pageInfo { hasNextPage } } dueDate project { id name } cycle { id number name }"
+local ISSUE_FIELDS = "id identifier title url updatedAt priority estimate team { id key } state { id name type } assignee { id name displayName } labels(first: 50) { nodes { id name color } pageInfo { hasNextPage } } dueDate project { id name } cycle { id number name } parent { id identifier } children(first: 50) { nodes { id state { type } } }"
 
 M.VIEWER = "query { viewer { id name organization { id name urlKey } } }"
 
