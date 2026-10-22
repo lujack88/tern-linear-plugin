@@ -238,6 +238,11 @@ M.ADD_TITLE = "Linear · adding a workspace…"
 -- `linear-todo.start`: only the window can open agents.
 M.START_TITLE = "Linear · starting an omp chat…"
 
+-- "Send to chat": the board asks the window half for the open chats (it answers with
+-- `{act = "chats"}`), then to send kv `linear-todo.send` ({pane, label, prompt}) to one of them.
+M.CHATS_TITLE = "Linear · listing chats…"
+M.SEND_TITLE = "Linear · sending to a chat…"
+
 -- Create modal ----------------------------------------------------------------
 
 M.PRIORITIES = { { value = 0, label = "No priority" }, { value = 1, label = "Urgent" }, { value = 2, label = "High" }, { value = 3, label = "Medium" }, { value = 4, label = "Low" } }
@@ -464,22 +469,27 @@ local function startDescription(description: string?): string
 		else "(no description)"
 end
 
+-- One issue's fields and description: the body of a single-issue message.
+local function issueBody(issue: any, title: string, stateName: string?, description: string?): string
+	return "- Identifier: " .. issue.identifier .. "\n"
+		.. "- Title: " .. title .. "\n"
+		.. startFacts(issue, stateName) .. "\n"
+		.. "## Description\n\n" .. startDescription(description)
+end
+
 -- The first message of an omp chat started on `issue`; `description` nil means it could not be loaded.
 function M.startPrompt(issue: any, title: string, stateName: string?, description: string?): string
 	return "Start working on Linear issue " .. issue.identifier .. ": " .. title .. ".\n\n"
 		.. GRILL
-		.. "- Identifier: " .. issue.identifier .. "\n"
-		.. "- Title: " .. title .. "\n"
-		.. startFacts(issue, stateName) .. "\n"
-		.. "## Description\n\n" .. startDescription(description) .. "\n\n"
+		.. issueBody(issue, title, stateName, description) .. "\n\n"
 		.. "Read the relevant code, grill me per the grilling skill, then write the plan. Do not implement anything until I approve the plan."
 end
 
--- One issue of a multi-issue start; `description` nil means it could not be loaded.
+-- One issue of a multi-issue message; `description` nil means it could not be loaded.
 export type StartEntry = { issue: any, title: string, stateName: string?, description: string? }
 
--- The first message of one omp chat started on all of `entries`, in their order.
-function M.startPromptMany(entries: { StartEntry }): string
+-- "TES-4, TES-11" and one "## TES-4: title" section per entry, each ending in a blank line.
+local function sections(entries: { StartEntry }): (string, string)
 	local idents, parts = {}, {}
 	for _, e in entries do
 		table.insert(idents, e.issue.identifier)
@@ -487,10 +497,42 @@ function M.startPromptMany(entries: { StartEntry }): string
 			.. startFacts(e.issue, e.stateName) .. "\n"
 			.. "### Description\n\n" .. startDescription(e.description) .. "\n\n")
 	end
-	return "Start working on these " .. #entries .. " Linear issues together: " .. table.concat(idents, ", ") .. ".\n\n"
+	return table.concat(idents, ", "), table.concat(parts)
+end
+
+-- The first message of one omp chat started on all of `entries`, in their order.
+function M.startPromptMany(entries: { StartEntry }): string
+	local idents, parts = sections(entries)
+	return "Start working on these " .. #entries .. " Linear issues together: " .. idents .. ".\n\n"
 		.. GRILL
-		.. table.concat(parts)
+		.. parts
 		.. "Read the relevant code, grill me per the grilling skill, then write ONE plan covering all of them. Do not implement anything until I approve the plan."
+end
+
+-- "Send to chat": `entries` handed to an open chat as context, with no instruction.
+function M.contextPrompt(entries: { StartEntry }): string
+	if #entries == 1 then
+		local e = entries[1]
+		return "Here is Linear issue " .. e.issue.identifier .. " for context: " .. e.title .. ".\n\n"
+			.. issueBody(e.issue, e.title, e.stateName, e.description)
+	end
+	local idents, parts = sections(entries)
+	return "Here are " .. #entries .. " Linear issues for context: " .. idents .. ".\n\n" .. (string.gsub(parts, "\n+$", ""))
+end
+
+-- A "Send to chat" target: the pane title, or the cwd's last folder when the title is only the
+-- program's name; then the model (without its provider) and the agent's state.
+function M.chatLabel(title: string, cwd: string, command: string?, model: string?, agentState: string): string
+	local program = string.match(command or "", "^%s*\"?([^\"%s]+)") or ""
+	program = string.lower((string.gsub(string.match(program, "[^/\\]+$") or "", "%.exe$", "")))
+	local dir = (string.gsub(cwd, "[/\\]+$", ""))
+	local name = if title ~= "" and string.lower(title) ~= program then title else string.match(dir, "[^/\\]+$") or cwd
+	local parts = { name }
+	if model and model ~= "" then
+		table.insert(parts, string.match(model, "[^/]+$") or model)
+	end
+	table.insert(parts, (string.gsub(agentState, "_input$", "")))
+	return table.concat(parts, " · ")
 end
 
 return M

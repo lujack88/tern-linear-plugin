@@ -24,8 +24,11 @@ type Undo = { label: string, at: number, revert: () -> () }
 -- and the values it opened with, so a pick is told apart from Esc.
 type Choice = { d: Create.Draft, ids: { string }, stateId: string, priority: number, assigneeId: string? }
 -- The context menu of issue `id`, acting on `ids`; `cursor` is the highlighted entry, `armed` the
--- first click on Cancel, `choice` the Status/Priority/Assignee list drilled into.
-type Menu = { id: string, ids: { string }, cursor: number, armed: boolean, choice: Choice? }
+-- first click on Cancel, `choice` the Status/Priority/Assignee list drilled into, `chats` the
+-- "Send to chat" list drilled into; `anchor` the node it hangs under when not the issue's row or card.
+type Menu = { id: string, ids: { string }, cursor: number, armed: boolean, choice: Choice?, chats: boolean?, anchor: string? }
+-- A "Send to chat" target from the window half: an agent's pane id or "carly", and its label.
+type Chat = { pane: any, label: string }
 type State = {
 	cx: BlockCx,
 	-- Bumped when the team changes or the key is withdrawn: callbacks of an older gen are dropped.
@@ -66,6 +69,11 @@ type State = {
 	adding: boolean,
 	-- "Start" was clicked: the title asks the window half to open an omp chat on kv `linear-todo.start`.
 	starting: boolean,
+	-- "Send to chat" was opened: the title asks the window half for `chats` (nil until it answers).
+	listing: boolean,
+	chats: { Chat }?,
+	-- A chat was picked: the title asks the window half to send kv `linear-todo.send`.
+	sending: boolean,
 	-- The issue opened from the board (Linear's issue view), drawn instead of the board.
 	detail: Detail.Detail?,
 	view: ViewName,
@@ -690,16 +698,18 @@ local function openDetail(state: State, id: string)
 end
 
 local function closeDetail(state: State)
-	state.detail = nil
+	state.detail, state.menu = nil, nil
 	state.cx:frame({ { "focus", tern.json.null } })
 end
 
--- Most issues one Start hands to a single omp chat.
+-- Most issues one Start or Send to chat takes.
 local START_MAX = 10
 
--- Hands issues `ids` (board order) to the window half, which opens one omp chat on them all
--- (Model.START_TITLE) once every description has answered.
-local function startAgent(state: State, ids: { string })
+-- Collects issues `ids` (board order) with their descriptions for a chat message: loads each one
+-- the issue view has not, in parallel, and calls `done` once all have answered (a failed one stays
+-- nil). `name` names the action in the over-the-cap error; `doing` is the info toast, given
+-- "TES-4" or "N issues".
+local function describe(state: State, ids: { string }, name: string, doing: (what: string) -> string, done: ({ Model.StartEntry }) -> ())
 	local entries: { Model.StartEntry } = {}
 	for _, id in ids do
 		local issue = find(state, id)
@@ -718,24 +728,20 @@ local function startAgent(state: State, ids: { string })
 		return
 	end
 	if #entries > START_MAX then
-		state.cx:toast("error", "Start takes up to " .. START_MAX .. " issues")
+		state.cx:toast("error", name .. " takes up to " .. START_MAX .. " issues")
 		return
 	end
 	local waiting = #entries
 	local function answered()
 		waiting -= 1
-		if waiting > 0 then
-			return
+		if waiting == 0 then
+			done(entries)
 		end
-		local e = entries[1]
-		kvSet("linear-todo.start", if #entries == 1 then Model.startPrompt(e.issue, e.title, e.stateName, e.description) else Model.startPromptMany(entries))
-		state.starting = true
-		state.cx:render()
 	end
 	local function descOf(info: any?): string?
 		return if not info then nil elseif type(info.description) == "string" then info.description else ""
 	end
-	state.cx:toast("info", "Starting " .. (if #entries == 1 then entries[1].issue.identifier else #entries .. " issues") .. " in omp…")
+	state.cx:toast("info", doing(if #entries == 1 then entries[1].issue.identifier else #entries .. " issues"))
 	local dt = state.detail
 	for _, e in entries do
 		if dt and dt.id == e.issue.id and dt.info then
@@ -750,6 +756,36 @@ local function startAgent(state: State, ids: { string })
 			end)
 		end
 	end
+end
+
+-- Hands issues `ids` to the window half, which opens one omp chat on them all (Model.START_TITLE).
+local function startAgent(state: State, ids: { string })
+	describe(state, ids, "Start", function(what)
+		return "Starting " .. what .. " in omp…"
+	end, function(entries)
+		local e = entries[1]
+		kvSet("linear-todo.start", if #entries == 1 then Model.startPrompt(e.issue, e.title, e.stateName, e.description) else Model.startPromptMany(entries))
+		state.starting = true
+		state.cx:render()
+	end)
+end
+
+-- Hands issues `ids` to the window half, which puts them into the open chat `chat` (Model.SEND_TITLE).
+local function sendToChat(state: State, ids: { string }, chat: Chat)
+	describe(state, ids, "Send to chat", function(what)
+		return "Sending " .. what .. " to " .. chat.label .. "…"
+	end, function(entries)
+		kvSet("linear-todo.send", { pane = chat.pane, label = chat.label, prompt = Model.contextPrompt(entries) })
+		state.sending = true
+		state.cx:render()
+	end)
+end
+
+-- Opens the menu of issue `id` straight on its "Send to chat" list, hung under node `anchor`; the
+-- open chats are window-only, so the title asks the window half, which answers with "chats".
+local function openChats(state: State, id: string, anchor: string)
+	state.menu = { id = id, ids = { id }, cursor = 1, armed = false, chats = true, anchor = anchor }
+	state.chats, state.listing = nil, true
 end
 
 -- j / k: the next or previous issue in the board's own order.
@@ -881,6 +917,8 @@ local function runDetail(state: State, dt: Detail.Detail, intent: Detail.Intent)
 		end
 	elseif intent == "start" then
 		startAgent(state, { dt.id })
+	elseif intent == "chat" then
+		openChats(state, dt.id, "main.head.chat")
 	end
 end
 
@@ -1051,13 +1089,25 @@ type Item = { key: string, text: string?, hint: string?, sub: boolean?, danger: 
 
 local SEP: Item = { key = "sep" }
 
--- The node path of the row or card the menu hangs under.
+-- The node path the menu hangs under: its anchor, else the issue's row or card.
 local function menuAnchor(state: State, m: Menu): string
-	return listPath(state, stateIdOf(state, m.id) or "") .. "." .. m.id
+	return m.anchor or listPath(state, stateIdOf(state, m.id) or "") .. "." .. m.id
 end
 
--- The menu's entries; several issues get only what applies to all of them.
-local function menuItems(m: Menu): { Item }
+-- The menu's entries, or the open chats once "Send to chat" is drilled into; several issues get
+-- only what applies to all of them.
+local function menuItems(state: State, m: Menu): { Item }
+	if m.chats then
+		local chats = state.chats
+		if not chats then
+			return { { key = "none", text = "Loading chats…" } }
+		end
+		local out: { Item } = {}
+		for i, c in chats do
+			table.insert(out, { key = "chat-" .. i, text = c.label })
+		end
+		return out
+	end
 	local n = #m.ids
 	local cancelText = if n > 1 then "Cancel " .. n .. " issues" else "Cancel issue"
 	local items: { Item } = {
@@ -1069,6 +1119,7 @@ local function menuItems(m: Menu): { Item }
 	if n == 1 then
 		table.insert(items, { key = "open", text = "Open issue", hint = "Enter" })
 		table.insert(items, { key = "start", text = "▷ Start in omp" })
+		table.insert(items, { key = "send", text = "Send to chat", sub = true })
 		table.insert(items, { key = "web", text = "Open in Linear" })
 		table.insert(items, { key = "copy-id", text = "Copy ID" })
 		table.insert(items, { key = "copy-link", text = "Copy link" })
@@ -1076,6 +1127,7 @@ local function menuItems(m: Menu): { Item }
 		table.insert(items, { key = "rename", text = "Rename", hint = "R" })
 	else
 		table.insert(items, { key = "start", text = "▷ Start in omp" })
+		table.insert(items, { key = "send", text = "Send to chat", sub = true })
 		table.insert(items, { key = "copy-id", text = "Copy IDs" })
 		table.insert(items, SEP)
 	end
@@ -1101,11 +1153,18 @@ local function closeMenu(state: State)
 	end
 end
 
--- From the list back to the menu's entries.
-local function menuBack(m: Menu, cx: BlockCx)
+-- From the list or the chats back to the menu's entries.
+local function menuBack(state: State, m: Menu, cx: BlockCx)
 	if m.choice then
 		Create.closePop(m.choice.d, cx)
 		m.choice = nil
+	elseif m.chats then
+		m.chats = false
+		for i, it in menuItems(state, m) do
+			if it.key == "send" then
+				m.cursor = i
+			end
+		end
 	end
 end
 
@@ -1119,11 +1178,25 @@ local function runItem(state: State, m: Menu, key: string, cx: BlockCx)
 	if key == "status" or key == "priority" or key == "assignee" then
 		m.choice = openChoice(state, m.ids, key :: BulkKind, menuAnchor(state, m), cx)
 		return
+	elseif key == "send" then
+		-- The open chats are window-only: the title asks the window half, which answers with "chats".
+		m.chats, m.cursor, state.chats, state.listing = true, 1, nil, true
+		return
+	elseif key == "none" then
+		return
 	elseif key == "cancel" and not m.armed then
 		m.armed = true
 		return
 	end
 	closeMenu(state)
+	local chat = string.match(key, "^chat%-(%d+)$")
+	if chat then
+		local c = state.chats and state.chats[tonumber(chat) :: number]
+		if c then
+			sendToChat(state, m.ids, c)
+		end
+		return
+	end
 	if key == "open" then
 		openDetail(state, m.id)
 	elseif key == "start" then
@@ -1162,7 +1235,7 @@ local function menuKey(state: State, m: Menu, k: Key, cx: BlockCx): boolean
 	if c then
 		local pop = c.d.pop
 		if name == "left" or (name == "backspace" and pop and pop.q.text == "") then
-			menuBack(m, cx)
+			menuBack(state, m, cx)
 			return true
 		end
 		Create.popKey(c.d, k, ctxOf(state), cx)
@@ -1171,9 +1244,11 @@ local function menuKey(state: State, m: Menu, k: Key, cx: BlockCx): boolean
 		end
 		return true
 	end
-	local items = menuItems(m)
+	local items = menuItems(state, m)
 	if name == "escape" then
 		closeMenu(state)
+	elseif m.chats and (name == "left" or name == "backspace") then
+		menuBack(state, m, cx)
 	elseif name == "up" or name == "k" or name == "down" or name == "j" then
 		local dir = if name == "up" or name == "k" then -1 else 1
 		local i = m.cursor + dir
@@ -1265,7 +1340,7 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			runItem(state, m, value, cx)
 			return
 		elseif name == "menu-back" then
-			menuBack(m, cx)
+			menuBack(state, m, cx)
 			return
 		elseif name == "menu-close" then
 			closeMenu(state)
@@ -1288,6 +1363,9 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		return
 	elseif name == "started" then
 		state.starting = false
+		return
+	elseif name == "sent" then
+		state.sending = false
 		return
 	elseif name == "start" then
 		startAgent(state, { value })
@@ -1431,6 +1509,11 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		end
 		return r :: boolean
 	end
+	-- The issue view's "Send to chat" list sits over it.
+	local m = state.menu
+	if m then
+		return menuKey(state, m, k, cx)
+	end
 	local dt = state.detail
 	if dt then
 		local before = Detail.snapshot(dt.d)
@@ -1448,10 +1531,6 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 			state.bulk = nil
 		end
 		return used
-	end
-	local m = state.menu
-	if m then
-		return menuKey(state, m, k, cx)
 	end
 	if state.switcher then
 		local n = tonumber(k.name)
@@ -1964,18 +2043,23 @@ local function bulkBar(state: State, n: number): Node
 	return el("div", "bulk", "bulk", { class = "lt-bulk" }, kids)
 end
 
--- The context menu under its row or card: its entries, or the list drilled into with a Back row.
+-- The context menu under its row or card: its entries, the list drilled into with a Back row, or
+-- the open chats (with a Back row unless the issue view's header opened them).
 local function menuView(state: State, m: Menu): Node
 	local at = menuAnchor(state, m)
 	local c = m.choice
+	local back = el("button", "pop-row", "back", { class = "lt-pop-row lt-menu-back", text = "‹ Back", actions = { click = "menu-back" } })
 	if c then
-		return Create.popover(c.d, ctxOf(state), at, el("button", "pop-row", "back", { class = "lt-pop-row lt-menu-back", text = "‹ Back", actions = { click = "menu-back" } }))
+		return Create.popover(c.d, ctxOf(state), at, back)
 	end
 	local issue = find(state, m.id)
-	local rows: { Node } = {
-		el("div", "ws-section", "title", { class = "lt-ws-section", text = if #m.ids > 1 then #m.ids .. " issues" else (issue and issue.identifier or "") }),
-	}
-	for i, it in menuItems(m) do
+	local what = if #m.ids > 1 then #m.ids .. " issues" else (issue and issue.identifier or "")
+	local rows: { Node } = {}
+	if m.chats and not m.anchor then
+		table.insert(rows, back)
+	end
+	table.insert(rows, el("div", "ws-section", "title", { class = "lt-ws-section", text = if m.chats then "Send " .. what .. " to" else what }))
+	for i, it in menuItems(state, m) do
 		if it.key == "sep" then
 			table.insert(rows, el("div", "menu-sep", "sep" .. i, { class = "lt-menu-sep" }))
 			continue
@@ -2044,7 +2128,9 @@ local function view(state: State): BlockView
 		return {
 			main = region("main", Detail.view(dt, opened, c, state.confirm == dt.id)),
 			dock = dock(state),
-			layer = if dt.d.pop then region("layer", { Create.scrim("cm-unpop"), Create.popover(dt.d, c) }) else nil,
+			layer = if dt.d.pop then region("layer", { Create.scrim("cm-unpop"), Create.popover(dt.d, c) })
+				elseif state.menu then region("layer", { Create.scrim("menu-close"), menuView(state, state.menu) })
+				else nil,
 		}
 	elseif dt then
 		-- The issue left the board (canceled here or elsewhere, or moved out by a sync).
@@ -2104,6 +2190,8 @@ tern.block.define("board", {
 			switcher = false,
 			adding = false,
 			starting = false,
+			listing = false,
+			sending = false,
 			loading = false,
 			failures = 0,
 			view = if kvGet("linear-todo.view") == "list" then "list" else "kanban",
@@ -2135,6 +2223,10 @@ tern.block.define("board", {
 			return Model.ADD_TITLE
 		elseif state.starting then
 			return Model.START_TITLE
+		elseif state.sending then
+			return Model.SEND_TITLE
+		elseif state.listing then
+			return Model.CHATS_TITLE
 		end
 		local s = setupOf()
 		return "Linear · " .. (if s and s.teamKey then (s.orgName or "") .. " · " .. s.teamKey else "not set up")
@@ -2206,6 +2298,20 @@ tern.block.define("board", {
 			return
 		end
 		local value = if type(ev.value) == "string" then ev.value else ""
+		-- From the window half: the open chats "Send to chat" asked for.
+		if ev.act == "chats" then
+			if state.listing and type(ev.chats) == "table" then
+				local chats: { Chat } = {}
+				for _, ch in ev.chats do
+					if type(ch) == "table" and type(ch.label) == "string" and (type(ch.pane) == "number" or ch.pane == "carly") then
+						table.insert(chats, { pane = ch.pane, label = ch.label })
+					end
+				end
+				state.chats = chats
+			end
+			state.listing = false
+			return
+		end
 		-- From the window half: `value` is the Setup's team id, `key` the API key; never log this event.
 		if ev.act == "key" then
 			if value == "" then

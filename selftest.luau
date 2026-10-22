@@ -304,6 +304,34 @@ local cases: { { name: string, fn: () -> () } } = {
 		end,
 	},
 	{
+		name = "contextPrompt",
+		fn = function()
+			local a = issue(4, "todo", { priority = 2, assignee = "Ada" })
+			local one = Model.contextPrompt({ { issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" } })
+			check(string.find(one, "^Here is Linear issue ENG%-4 for context: Fix it%.\n\n%- Identifier: ENG%-4\n") ~= nil, "lead")
+			check(string.find(one, "## Description\n\nSteps here$") ~= nil, "ends with the description")
+			local many = Model.contextPrompt({
+				{ issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" },
+				{ issue = issue(11, "todo"), title = "Other", stateName = nil, description = nil },
+			})
+			check(string.find(many, "^Here are 2 Linear issues for context: ENG%-4, ENG%-11%.") ~= nil, "many lead")
+			check(string.find(many, "## ENG-11: Other", 1, true) ~= nil and string.find(many, "read it in Linear%)$") ~= nil, "many sections")
+			for _, p in { one, many } do
+				for _, banned in { "grilling", "plan", "Start working" } do
+					check(string.find(p, banned, 1, true) == nil, "no " .. banned)
+				end
+			end
+		end,
+	},
+	{
+		name = "chatLabel",
+		fn = function()
+			check(Model.chatLabel("omp", "C:\\Users\\me\\fixit-app", "omp --config x.yml", "anthropic/sonnet", "idle") == "fixit-app · sonnet · idle", "program title")
+			check(Model.chatLabel("Fix 25", "/home/me/app/", "\"C:\\bin\\omp.exe\"", nil, "waiting_input") == "Fix 25 · waiting", "own title")
+			check(Model.chatLabel("", "/srv/api/", nil, "", "working") == "api · working", "no title")
+		end,
+	},
+	{
 		name = "range",
 		fn = function()
 			local list = { issue(1, "todo"), issue(2, "todo"), issue(3, "prog"), issue(4, "done") }

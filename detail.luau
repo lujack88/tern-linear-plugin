@@ -30,7 +30,8 @@ export type Detail = {
 }
 
 -- What the host should do after a key, click or event: "close", "title" / "desc" (save that
--- field), "comment" (post it), "next" / "prev" (open the neighbouring issue), "web", "start" or "undo".
+-- field), "comment" (post it), "next" / "prev" (open the neighbouring issue), "web", "start",
+-- "chat" (open the "Send to chat" list) or "undo".
 export type Intent = string
 
 local function el(tag: string, role: string, key: string, props: { [string]: any }?, children: { Node }?): Node
@@ -253,6 +254,8 @@ function M.act(dt: Detail, name: string, value: string, c: Create.Ctx, cx: Block
 		return "web"
 	elseif name == "dt-start" then
 		return "start"
+	elseif name == "dt-chat" then
+		return "chat"
 	elseif name == "dt-send" then
 		return "comment"
 	elseif name == "dt-desc" then
@@ -292,6 +295,7 @@ function M.view(dt: Detail, issue: any, c: Create.Ctx, armed: boolean): { Node }
 			el("span", "dt-crumb", "crumb", { class = "lt-dt-crumb", text = issue.identifier }),
 			el("span", "spacer", "sp", { class = "lt-spacer" }),
 			el("button", "start", "start", { class = "lt-start", text = "▷ Start", title = "Start working on this issue in a new omp chat", actions = { click = "dt-start" } }),
+			el("button", "dt-chat", "chat", { class = "lt-tab", text = "Send to chat ▾", title = "Send this issue to an open chat", actions = { click = "dt-chat" } }),
 			el("button", "dt-web", "web", { class = "lt-tab", text = "Open in Linear ↗", title = issue.url, actions = { click = "dt-web" } }),
 			el("button", "act", "cancel", {
 				class = "lt-tab lt-del",

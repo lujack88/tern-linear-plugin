@@ -84,12 +84,22 @@ opens it; `m` opens it for the keyboard-selected issue):
 
 - **Status ▸**, **Priority ▸**, **Assignee ▸**: open the New issue modal's list in
   the menu, the current value checked, with a filter field and a **‹ Back** row.
-- **Open issue** (`Enter`), **▷ Start in omp**, **Open in Linear**, **Copy ID**,
-  **Copy link**, **Rename** (`R`), and **Cancel issue** (click twice).
+- **Open issue** (`Enter`), **▷ Start in omp**, **Send to chat ▸**, **Open in
+  Linear**, **Copy ID**, **Copy link**, **Rename** (`R`), and **Cancel issue**
+  (click twice).
 
 When the clicked issue is one of several selected, the menu acts on the whole
 selection: its title says how many, and it offers Status, Priority, Assignee,
-**▷ Start in omp**, **Copy IDs** and **Cancel N issues**. Every change offers one undo.
+**▷ Start in omp**, **Send to chat ▸**, **Copy IDs** and **Cancel N issues**.
+Every change offers one undo.
+
+**Send to chat ▸** lists Carly and every open agent chat in Tern, as the pane
+title (or its folder when the title is only the program's name), model and
+state, for example `fixit-app · sonnet · idle`. Pick one to send it the issue
+(or the selection, up to 10): a message that starts "Here is Linear issue
+TES-4 for context:" with the same fields and description as Start, but no
+instruction. A busy chat queues it. The chat's pane is shown; Carly opens with
+the message.
 
 Keys while it is open: `↑`/`↓` (or `K`/`J`) move, `Enter` runs, `→`/`Enter` opens
 a ▸ list, `←` (or `Backspace` in an empty filter) goes back, `Esc` closes. A click
@@ -108,8 +118,8 @@ open it in place of the board, as Linear's list does:
   shortcuts. Each change is written to Linear at once.
 - **Activity**: who created the issue, then the comments, oldest first. Write a
   comment in the box at the bottom and send it with **Comment** or `Ctrl+Enter`.
-- **Header**: `←` back to the board (`Esc`), **▷ Start**, **Open in Linear ↗**,
-  and **Cancel issue** (click twice).
+- **Header**: `←` back to the board (`Esc`), **▷ Start**, **Send to chat ▾**,
+  **Open in Linear ↗**, and **Cancel issue** (click twice).
 
 `J` / `K` open the next or previous issue in the board's order. Every edit offers
 the usual one-step undo. Times are shown in UTC. Comments can be read and added

@@ -38,6 +38,20 @@ path for up to 10 issues: the descriptions load in parallel, and once all have
 answered the board writes one `Model.startPromptMany` message, so the window half
 is unchanged.
 
+**Send to chat** uses the same title channel twice, because the open chats
+(`cx.agents:list`), `cx.agents:ask`, `cx:ask_carly` and `cx.layout:focus` are all
+window-only:
+
+1. Opening the list sets the title to `Model.CHATS_TITLE`. The window answers with
+   `{act = "chats", chats = {{pane, label}, …}}` straight in the event (no kv):
+   Carly first (`pane = "carly"`), then every agent that has not exited, labelled
+   by `Model.chatLabel`. Until it answers the list reads "Loading chats…".
+2. Picking a chat loads the descriptions as Start does, writes
+   `{pane, label, prompt = Model.contextPrompt(…)}` to kv `linear-todo.send` and
+   sets the title to `Model.SEND_TITLE`. The window answers `{act = "sent"}`, takes
+   and clears the kv entry, and calls `cx.agents:ask` (then focuses that pane and
+   toasts) or `cx:ask_carly`. A failed send toasts the error.
+
 The window injects again on `window_start`, 300 ms after load (a reload does not
 fire `window_start`), after adding or switching a workspace, and up to 3 s after
 opening a board, to cover the block's init race. The block ignores a duplicate key
