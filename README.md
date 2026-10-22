@@ -76,7 +76,7 @@ The View, the Mine toggle and the collapsed columns are remembered.
   `m` on the keyboard-selected issue: its menu opens under it (below).
 - While an issue is lifted for a move, a click drops it instead.
 
-The checkbox, `⠿`, `✎`, `✕`, `⋮` and `▷` keep their own actions.
+The checkbox, `⠿`, `✎`, `✕`, `⋮`, `▷` and `▾` keep their own actions.
 
 ### The issue menu
 
@@ -182,7 +182,8 @@ untouched keeps the template's own formatting.
 | Action | Key |
 | --- | --- |
 | Rename | click ✎, or `r` / `F2` |
-| Start in omp | click **▷ Start** on a row or in the issue view, or the **▷** at a card's bottom-right |
+| Start in omp | click **▷ Start** on a row or in the issue view; on a card, click the **▷** at its bottom-right, then **▷ New chat** |
+| Start or send to a session | click a row's **▾** (the right part of its **▷ Start** split button) or a card's **▷**: **▷ New chat**, or **Send to a session ▸** (the **Send to chat ▸** list) |
 
 Start opens a new omp chat in plan mode. Its first message is the issue:
 identifier, title, URL, State, priority, assignee, labels and description. It

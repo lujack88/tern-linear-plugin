@@ -25,8 +25,9 @@ type Undo = { label: string, at: number, revert: () -> () }
 type Choice = { d: Create.Draft, ids: { string }, stateId: string, priority: number, assigneeId: string? }
 -- The context menu of issue `id`, acting on `ids`; `cursor` is the highlighted entry, `armed` the
 -- first click on Cancel, `choice` the Status/Priority/Assignee list drilled into, `chats` the
--- "Send to chat" list drilled into; `anchor` the node it hangs under when not the issue's row or card.
-type Menu = { id: string, ids: { string }, cursor: number, armed: boolean, choice: Choice?, chats: boolean?, anchor: string? }
+-- "Send to chat" list drilled into; `anchor` the node it hangs under when not the issue's row or card;
+-- `split` the Start dropdown (a List row's ▾ or a card's ▷): "New chat" or "Send to a session".
+type Menu = { id: string, ids: { string }, cursor: number, armed: boolean, choice: Choice?, chats: boolean?, anchor: string?, split: boolean? }
 -- A "Send to chat" target from the window half: an agent's pane id or "carly", its title (as the
 -- tab list names it), a muted meta line, its Tern icon name and agent state.
 type Chat = { pane: any, label: string, meta: string?, icon: string?, state: string? }
@@ -1109,6 +1110,9 @@ local function menuItems(state: State, m: Menu): { Item }
 		end
 		return out
 	end
+	if m.split then
+		return { { key = "start", text = "▷ New chat" }, { key = "send", text = "Send to a session", sub = true } }
+	end
 	local n = #m.ids
 	local cancelText = if n > 1 then "Cancel " .. n .. " issues" else "Cancel issue"
 	local items: { Item } = {
@@ -1143,6 +1147,15 @@ local function openMenu(state: State, id: string)
 	end
 	local ids = if state.picked[id] then pickedIds(state) else { id }
 	state.menu, state.sel, state.confirm = { id = id, ids = ids, cursor = 1, armed = false }, id, nil
+end
+
+-- Opens the Start dropdown of issue `id` under its List row's split button or its card's ▷.
+local function openSplit(state: State, id: string)
+	if not find(state, id) then
+		return
+	end
+	local at = listPath(state, stateIdOf(state, id) or "") .. "." .. id .. (if state.view == "list" then ".split" else ".chips.start")
+	state.menu, state.sel, state.confirm = { id = id, ids = { id }, cursor = 1, armed = false, anchor = at, split = true }, id, nil
 end
 
 -- Closes the menu, taking the caret out of its list's search field.
@@ -1391,6 +1404,8 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		openDetail(state, value)
 	elseif name == "menu" then
 		openMenu(state, value)
+	elseif name == "split" then
+		openSplit(state, value)
 	elseif name == "lift" then
 		if state.lift == value then
 			state.lift, state.dropState = nil, nil
@@ -1728,7 +1743,19 @@ local function controls(state: State, id: string, into: { Node }, withStart: boo
 	}))
 	table.insert(into, el("button", "act", "rename", { class = "lt-act", text = "✎", aria = "Rename", title = "Rename", actions = { click = "rename=" .. id } }))
 	if withStart then
-		table.insert(into, el("button", "start", "start", { class = "lt-start", text = "▷ Start", aria = "Start in omp", title = "Start in omp", actions = { click = "start=" .. id } }))
+		-- A split button: ▷ Start starts at once, ▾ opens the dropdown (New chat / Send to a session).
+		local m = state.menu
+		table.insert(into, el("div", "split", "split", { class = "lt-split" }, {
+			el("button", "start", "start", { class = "lt-start lt-split-main", text = "▷ Start", aria = "Start in omp", title = "Start in omp", actions = { click = "start=" .. id } }),
+			el("button", "split-caret", "caret", {
+				class = "lt-start lt-split-caret",
+				text = "▾",
+				aria = "Start or send to a session",
+				title = "Start in a new chat or send to a session",
+				attrs = { ["data-open"] = flag(m ~= nil and m.split == true and m.id == id) },
+				actions = { click = "split=" .. id },
+			}),
+		}))
 	end
 	table.insert(into, el("button", "act", "cancel", {
 		class = "lt-act lt-del",
@@ -1852,12 +1879,14 @@ local function card(state: State, issue: any, col: Column, liftState: string?): 
 	}
 	extras(issue, chips)
 	table.insert(chips, el("span", "spacer", "sp", { class = "lt-spacer" }))
+	local m = state.menu
 	table.insert(chips, el("button", "start", "start", {
 		class = "lt-start lt-start-icon",
 		text = "▷",
-		aria = "Start in omp",
-		title = "Start working on this issue in a new omp chat",
-		actions = { click = "start=" .. id },
+		aria = "Start or send to a session",
+		title = "Start in a new omp chat or send to a session",
+		attrs = { ["data-open"] = flag(m ~= nil and m.split == true and m.id == id) },
+		actions = { click = "split=" .. id },
 	}))
 	return el("div", "card", id, itemProps(state, issue, "lt-card", liftState ~= nil and col.state.id ~= liftState), {
 		el("div", "top", "top", { class = "lt-top" }, top),
@@ -2052,7 +2081,7 @@ local function bulkBar(state: State, n: number): Node
 end
 
 -- The context menu under its row or card: its entries, the list drilled into with a Back row, or
--- the open chats (with a Back row unless the issue view's header opened them).
+-- the open chats (with a Back row unless the issue view's header opened them); or the Start dropdown.
 local function menuView(state: State, m: Menu): Node
 	local at = menuAnchor(state, m)
 	local c = m.choice
@@ -2063,7 +2092,7 @@ local function menuView(state: State, m: Menu): Node
 	local issue = find(state, m.id)
 	local what = if #m.ids > 1 then #m.ids .. " issues" else (issue and issue.identifier or "")
 	local rows: { Node } = {}
-	if m.chats and not m.anchor then
+	if m.chats and (m.split or not m.anchor) then
 		table.insert(rows, back)
 	end
 	table.insert(rows, el("div", "ws-section", "title", { class = "lt-ws-section", text = if m.chats then "Send " .. what .. " to" else what }))

@@ -37,8 +37,29 @@
 		white-space: nowrap;
 	}
 
-	& .lt-start:hover {
+	& .lt-start:hover,
+	& .lt-start[data-open='true'] {
 		background: rgb(from var(--lt-accent) r g b / 12%);
+	}
+
+	/* A List row's ▷ Start | ▾: one pill, the main segment's right border the 1px divider. */
+	& .lt-split {
+		flex: 0 0 auto;
+		display: flex;
+		flex-direction: row;
+		align-items: stretch;
+		gap: 0;
+	}
+
+	& .lt-split .lt-split-main {
+		padding: 0 12px;
+		border-radius: 6px 0 0 6px;
+	}
+
+	& .lt-split .lt-split-caret {
+		padding: 0 6px;
+		border-left-width: 0;
+		border-radius: 0 6px 6px 0;
 	}
 }
 
