@@ -7,6 +7,8 @@
 	--lt-line-hover: rgb(from var(--tv-fg) r g b / 16%);
 	--lt-muted: var(--sf-c-muted, rgb(from var(--tv-fg) r g b / 55%));
 	--lt-red: #eb5757;
+	/* --sf-accent is unset in some panes (it resolved to nothing in a chat-reader cover); --sf-c-accent is set there. */
+	--lt-accent: var(--sf-c-accent, var(--sf-accent));
 	font-family: "Inter", "Segoe UI", system-ui, sans-serif;
 	font-size: 13px;
 	color: var(--tv-fg);
@@ -310,6 +312,26 @@
 		font-weight: 500;
 	}
 
+	/* Tick box: hover-only until any issue is ticked, as in Linear. */
+	& .lt-pick {
+		flex: 0 0 auto;
+		width: 14px;
+		height: 14px;
+		margin: 0;
+		cursor: pointer;
+		opacity: 0;
+	}
+
+	& .lt-card:hover .lt-pick,
+	& .lt-row:hover .lt-pick,
+	& .lt-pick[data-show='true'] {
+		opacity: 1;
+	}
+
+	& .lt-card[data-picked='true'] {
+		background: rgb(from var(--lt-accent) r g b / 12%);
+	}
+
 	/* Start in omp: always shown, unlike the hover-only controls. */
 	& .lt-start {
 		flex: 0 0 auto;
@@ -572,6 +594,10 @@
 		box-shadow: inset 2px 0 0 var(--sf-accent);
 	}
 
+	& .lt-row[data-picked='true'] {
+		background: rgb(from var(--lt-accent) r g b / 12%);
+	}
+
 	& .lt-row[data-pending='true'] {
 		opacity: 0.6;
 	}
@@ -623,6 +649,45 @@
 		font-size: 12px;
 		color: var(--lt-muted);
 		background: var(--sf-shade);
+	}
+
+	& .lt-bulk {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+		padding: 6px 12px;
+		background: var(--sf-shade);
+		border-top: 1px solid var(--lt-line);
+	}
+
+	& .lt-bulk-count {
+		margin-right: 8px;
+		font-weight: 500;
+	}
+
+	& .lt-bulk-btn {
+		height: 24px;
+		padding: 0 8px;
+		border-radius: 4px;
+		font-size: 12px;
+		color: var(--lt-muted);
+	}
+
+	& .lt-bulk-btn:hover,
+	& .lt-bulk-btn[data-open='true'] {
+		background: rgb(from var(--tv-fg) r g b / 8%);
+		color: var(--tv-fg);
+	}
+
+	& .lt-bulk-btn.lt-del:hover,
+	& .lt-bulk-btn[data-confirm='true'] {
+		color: var(--lt-red);
+	}
+
+	& .lt-spacer {
+		flex: 1 1 0;
+		min-width: 0;
 	}
 }
 

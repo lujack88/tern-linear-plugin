@@ -66,6 +66,11 @@ type State = {
 	mine: boolean,
 	-- Collapsed columns / List groups by State id (remembered in kv).
 	folded: { [string]: boolean },
+	-- Issues ticked for a bulk edit (not saved), the last one ticked (a Shift-click range starts
+	-- there), and the bulk bar's open Status/Priority/Assignee list.
+	picked: { [string]: boolean },
+	pickAnchor: string?,
+	bulk: Create.Draft?,
 }
 
 local function nowSec(): number
@@ -143,6 +148,7 @@ local function remove(state: State, id: string)
 	if i then
 		table.remove(state.issues, i)
 	end
+	state.picked[id] = nil
 end
 
 local function saveCache(state: State)
@@ -169,6 +175,7 @@ local function resetBoard(state: State)
 	state.overlay, state.creating, state.draft, state.kept, state.meta, state.detail = {}, {}, nil, nil, nil, nil
 	state.sel, state.lift, state.dropState, state.confirm, state.edit, state.undo = nil, nil, nil, nil, nil, nil
 	state.error, state.failures, state.loading, state.fetchedAt = nil, 0, false, nil
+	state.picked, state.pickAnchor, state.bulk = {}, nil, nil
 end
 
 local function columnsOf(state: State): { Column }
@@ -229,6 +236,11 @@ local function fetch(state: State, manual: boolean, after: (() -> ())?)
 			end
 			if not find(state, state.lift) then
 				state.lift, state.dropState = nil, nil
+			end
+			for id in state.picked do
+				if not find(state, id) then
+					state.picked[id] = nil
+				end
 			end
 			if manual then
 				state.cx:toast("success", "Linear synced", #issues .. " issues")
@@ -837,6 +849,158 @@ local function runDetail(state: State, dt: Detail.Detail, intent: Detail.Intent)
 	end
 end
 
+-- Selection -----------------------------------------------------------------
+
+-- state.confirm while the bulk bar's "Cancel N?" awaits its second click (issue ids never clash).
+local BULK = "bulk"
+-- Node path of the bulk bar; its lists hang under its buttons.
+local BULK_BAR = "dock.bulk"
+-- A bulk list's Draft holds these until Create.choose writes the pick over one of them.
+local UNSET_STATE, UNSET_PERSON, UNSET_PRIORITY = "", "?", -1
+
+type BulkKind = "status" | "priority" | "assignee"
+-- One issue's write in a bulk edit, and what puts it back (`backState`: the State to show meanwhile).
+type Step = { id: string, ov: Overlay, input: any, back: any, backState: string? }
+
+local function orNull(v: any): any
+	return if v == nil then tern.json.null else v
+end
+
+-- The ticked issues the board shows, in its order.
+local function pickedIds(state: State): { string }
+	local out: { string } = {}
+	for _, issue in Model.list(columnsOf(state)) do
+		if state.picked[issue.id] then
+			table.insert(out, issue.id)
+		end
+	end
+	return out
+end
+
+-- Ticks or unticks `id`; `range` ticks every issue from the last one ticked to `id`, in board order.
+local function pick(state: State, id: string, range: boolean)
+	if not find(state, id) then
+		return
+	end
+	local from = state.pickAnchor
+	if range and from then
+		for _, r in Model.range(Model.list(columnsOf(state)), from, id) do
+			state.picked[r] = true
+		end
+	elseif state.picked[id] then
+		state.picked[id] = nil
+	else
+		state.picked[id] = true
+	end
+	state.pickAnchor, state.bulk = id, nil
+	if state.confirm == BULK then
+		state.confirm = nil
+	end
+end
+
+local function unpick(state: State)
+	state.picked, state.pickAnchor, state.bulk = {}, nil, nil
+	if state.confirm == BULK then
+		state.confirm = nil
+	end
+end
+
+-- Writes every step through `push`, then offers one undo for the ones that landed.
+local function pushAll(state: State, steps: { Step }, verb: string, did: string)
+	local left, landed = #steps, {} :: { Step }
+	local function settle()
+		left -= 1
+		local n = #landed
+		if left == 0 and n > 0 then
+			offer(state, did .. " " .. n .. (if n == 1 then " issue" else " issues"), function()
+				for _, s in landed do
+					push(state, s.id, if s.backState then { stateId = s.backState } else overlayFor(state, s.id), s.back, "Undo")
+				end
+			end)
+		end
+	end
+	for _, s in steps do
+		push(state, s.id, s.ov, s.input, verb, function()
+			table.insert(landed, s)
+			settle()
+		end, settle)
+	end
+end
+
+-- Sets `kind` to `value` (a Create option id: a State id, "0"–"4", a user id or "none") on every
+-- issue of `ids` it changes, with one undo for all of them.
+local function applyMany(state: State, ids: { string }, kind: BulkKind, value: string)
+	local steps: { Step } = {}
+	for _, id in ids do
+		local issue = find(state, id)
+		if not issue then
+			continue
+		end
+		if kind == "status" then
+			local prevId = issue.state.id
+			if Model.effective(issue, state.overlay) ~= value and Model.stateById(state.states, value) then
+				table.insert(steps, { id = id, ov = { stateId = value }, input = { stateId = value }, back = { stateId = prevId }, backState = prevId })
+			end
+		elseif kind == "priority" then
+			local prev, to = if type(issue.priority) == "number" then issue.priority else 0, tonumber(value) or 0
+			if prev ~= to then
+				table.insert(steps, { id = id, ov = overlayFor(state, id), input = { priority = to }, back = { priority = prev } })
+			end
+		else
+			local prev = if type(issue.assignee) == "table" then issue.assignee.id else nil
+			local to = if value == "none" then nil else value
+			if prev ~= to then
+				table.insert(steps, { id = id, ov = overlayFor(state, id), input = { assigneeId = orNull(to) }, back = { assigneeId = orNull(prev) } })
+			end
+		end
+	end
+	pushAll(state, steps, "Update", "Updated")
+end
+
+-- Cancels every issue of `ids`, as ✕ does one, with one undo for all of them.
+local function cancelMany(state: State, ids: { string })
+	local cancelId = Model.cancelState(state.states)
+	if not cancelId then
+		state.cx:toast("error", "Cancel failed", "This team has no canceled state")
+		return
+	end
+	local steps: { Step } = {}
+	for _, id in ids do
+		local issue = find(state, id)
+		if issue then
+			local prevId = issue.state.id
+			table.insert(steps, { id = id, ov = { gone = true }, input = { stateId = cancelId }, back = { stateId = prevId }, backState = prevId })
+		end
+	end
+	pushAll(state, steps, "Cancel", "Canceled")
+end
+
+-- Opens the bulk bar's list of `kind`: the create modal's popover, on a Draft of its own.
+local function openBulk(state: State, kind: BulkKind, cx: BlockCx)
+	local b = Create.new(UNSET_STATE, UNSET_PERSON)
+	b.root, b.anchor, b.priority = BULK_BAR, BULK_BAR, UNSET_PRIORITY
+	Create.openPop(b, kind, cx)
+	state.bulk = b
+	if kind == "assignee" and not state.meta then
+		loadMeta(state)
+	end
+end
+
+-- Once the bulk list closed: applies what was picked in it (nothing after Esc or a click outside).
+local function takeBulk(state: State, b: Create.Draft)
+	if b.pop then
+		return
+	end
+	state.bulk = nil
+	if b.stateId ~= UNSET_STATE then
+		applyMany(state, pickedIds(state), "status", b.stateId)
+	elseif b.priority ~= UNSET_PRIORITY then
+		applyMany(state, pickedIds(state), "priority", tostring(b.priority))
+	elseif b.assigneeId ~= UNSET_PERSON then
+		applyMany(state, pickedIds(state), "assignee", b.assigneeId or "none")
+	end
+end
+
 -- Actions -------------------------------------------------------------------
 
 -- Where `c` creates: the selected issue's column, else the first unstarted one, else the first.
@@ -887,6 +1051,12 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			runDetail(state, dt, r)
 		end
 		saveProps(state, dt, before)
+		return
+	end
+	local b = state.bulk
+	if b and string.sub(name, 1, 3) == "cm-" then
+		Create.act(b, name, value, ctxOf(state), cx)
+		takeBulk(state, b)
 		return
 	end
 	if name ~= "ws-pop" then
@@ -958,6 +1128,25 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		else
 			state.confirm = value
 		end
+	elseif name == "pick" or name == "pick-range" then
+		pick(state, value, name == "pick-range")
+	elseif name == "unpick" then
+		unpick(state)
+	elseif name == "bulk-pop" then
+		if state.confirm == BULK then
+			state.confirm = nil
+		end
+		if value == "status" or value == "priority" or value == "assignee" then
+			openBulk(state, value, cx)
+		end
+	elseif name == "bulk-cancel" then
+		if state.confirm == BULK then
+			state.confirm = nil
+			cancelMany(state, pickedIds(state))
+			unpick(state)
+		else
+			state.confirm = BULK
+		end
 	elseif name == "undo" then
 		local u = fresh(state)
 		if u then
@@ -986,6 +1175,11 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		local cols = columnsOf(state)
 		if not visible(cols, state.sel) then
 			state.sel, state.confirm = nil, nil
+		end
+		for id in state.picked do
+			if not visible(cols, id) then
+				state.picked[id] = nil
+			end
 		end
 	end
 end
@@ -1024,6 +1218,12 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		end
 		saveProps(state, dt, before)
 		return r ~= false
+	end
+	local b = state.bulk
+	if b then
+		local used = Create.popKey(b, k, ctxOf(state), cx)
+		takeBulk(state, b)
+		return used
 	end
 	if state.switcher then
 		local n = tonumber(k.name)
@@ -1144,7 +1344,9 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		end
 		return true
 	elseif name == "escape" then
-		if state.lift then
+		if next(state.picked) ~= nil then
+			unpick(state)
+		elseif state.lift then
 			state.lift, state.dropState = nil, nil
 		elseif state.confirm then
 			state.confirm = nil
@@ -1156,6 +1358,9 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		return true
 	elseif (name == "r" or name == "f2") and state.sel then
 		act(state, "rename", state.sel, cx)
+		return true
+	elseif name == "x" and state.sel then
+		act(state, "pick", state.sel, cx)
 		return true
 	elseif name == "c" then
 		local col = defaultColumn(cols, selIdx)
@@ -1278,6 +1483,20 @@ local function titleNode(state: State, issue: any, stateId: string, title: strin
 	return el("div", "title", "title", { class = "lt-title", text = title, max = max })
 end
 
+-- The tick box at an issue's left edge: shown on hover, and on every issue while any is ticked.
+local function pickBox(state: State, id: string): Node
+	return el("input", "pick", "pick", {
+		type = "checkbox",
+		name = "pick",
+		value = id,
+		checked = state.picked[id] == true,
+		class = "lt-pick",
+		aria = "Select issue",
+		title = "Select (x) · Shift-click selects a range",
+		attrs = { ["data-show"] = flag(next(state.picked) ~= nil) },
+	})
+end
+
 -- Props shared by a card and a row: selection, pending and drop marks, click and open.
 local function itemProps(state: State, issue: any, class: string, dropHere: boolean): { [string]: any }
 	local id = issue.id
@@ -1288,6 +1507,7 @@ local function itemProps(state: State, issue: any, class: string, dropHere: bool
 			["data-confirm"] = flag(state.confirm == id),
 			["data-pending"] = flag(state.overlay[id] ~= nil),
 			["data-drop"] = flag(dropHere),
+			["data-picked"] = flag(state.picked[id] == true),
 		},
 		mark = if state.lift == id then "pick" else nil,
 		title = issue.url,
@@ -1299,6 +1519,7 @@ local function card(state: State, issue: any, col: Column, liftState: string?): 
 	local id = issue.id
 	local _, title = Model.effective(issue, state.overlay)
 	local top: { Node } = {
+		pickBox(state, id),
 		el("span", "id", "id", { class = "lt-id", text = issue.identifier }),
 		el("span", "spacer", "sp", { class = "lt-spacer" }),
 	}
@@ -1331,6 +1552,7 @@ local function row(state: State, issue: any, col: Column, liftState: string?): N
 	local id = issue.id
 	local _, title = Model.effective(issue, state.overlay)
 	local kids: { Node } = {
+		pickBox(state, id),
 		prio(issue),
 		el("span", "id", "id", { class = "lt-id", text = issue.identifier }),
 		titleNode(state, issue, col.state.id, title, nil),
@@ -1472,30 +1694,63 @@ local function switcher(state: State): Node
 	} :: any
 end
 
+-- The bulk bar: how many issues are ticked, their Status/Priority/Assignee lists, cancel and clear.
+local function bulkBar(state: State, n: number): Node
+	local armed = state.confirm == BULK
+	local open = state.bulk and state.bulk.pop and state.bulk.pop.kind
+	local function list(kind: BulkKind, text: string): Node
+		return el("button", "bulk-btn", kind, {
+			class = "lt-bulk-btn",
+			text = text .. " ▾",
+			attrs = { ["data-open"] = flag(open == kind) },
+			actions = { click = "bulk-pop=" .. kind },
+		})
+	end
+	return el("div", "bulk", "bulk", { class = "lt-bulk" }, {
+		el("span", "bulk-count", "count", { class = "lt-bulk-count", text = n .. " selected" }),
+		list("status", "Status"),
+		list("priority", "Priority"),
+		list("assignee", "Assignee"),
+		el("button", "bulk-btn", "cancel", {
+			class = "lt-bulk-btn lt-del",
+			text = if armed then "Cancel " .. n .. "?" else "Cancel issues",
+			title = if armed then "Click again to cancel " .. n .. (if n == 1 then " issue" else " issues") else "Move the selected issues to Canceled",
+			attrs = { ["data-confirm"] = flag(armed) },
+			actions = { click = "bulk-cancel" },
+		}),
+		el("span", "spacer", "sp", { class = "lt-spacer" }),
+		el("button", "bulk-btn", "clear", { class = "lt-bulk-btn", text = "×", aria = "Clear selection", title = "Clear selection (Esc)", actions = { click = "unpick" } }),
+	})
+end
+
+-- A hint or the undo offer, then the bulk bar while issues are ticked (not over the issue view).
 local function dock(state: State): Node?
 	local function ident(id: string?): string
 		local issue = find(state, id)
 		return if issue then issue.identifier else "issue"
 	end
-	local kid: Node
-	if state.confirm then
+	local kids: { Node } = {}
+	if state.confirm and state.confirm ~= BULK then
 		local again = if state.detail then "Click Cancel issue again to cancel " else "Press Delete again to cancel "
-		kid = el("div", "hint", "hint", { class = "lt-hint", text = again .. ident(state.confirm) })
+		table.insert(kids, el("div", "hint", "hint", { class = "lt-hint", text = again .. ident(state.confirm) }))
 	elseif state.lift then
 		local target = Model.stateById(state.states, state.dropState)
 		local to = if target then " to " .. target.name else ""
-		kid = el("div", "hint", "hint", { class = "lt-hint", text = "Moving " .. ident(state.lift) .. to .. " — click a State or press Enter · Esc cancels" })
+		table.insert(kids, el("div", "hint", "hint", { class = "lt-hint", text = "Moving " .. ident(state.lift) .. to .. " — click a State or press Enter · Esc cancels" }))
 	else
 		local u = fresh(state)
-		if not u then
-			return nil
+		if u then
+			table.insert(kids, el("div", "undo", "undo", { class = "lt-undo" }, {
+				el("span", "undo-label", "label", { class = "lt-undo-label", text = u.label }),
+				el("button", "undo-btn", "btn", { class = "lt-undo-btn", text = "Undo", aria = "Undo", actions = { click = "undo" } }),
+			}))
 		end
-		kid = el("div", "undo", "undo", { class = "lt-undo" }, {
-			el("span", "undo-label", "label", { class = "lt-undo-label", text = u.label }),
-			el("button", "undo-btn", "btn", { class = "lt-undo-btn", text = "Undo", aria = "Undo", actions = { click = "undo" } }),
-		})
 	end
-	return region("dock", { kid })
+	local n = if state.detail then 0 else #pickedIds(state)
+	if n > 0 then
+		table.insert(kids, bulkBar(state, n))
+	end
+	return if #kids > 0 then region("dock", kids) else nil
 end
 
 local function empty(kids: { Node }, text: string): BlockView
@@ -1544,6 +1799,7 @@ local function view(state: State): BlockView
 	local d = state.draft
 	local layer = if d then region("layer", Create.view(d, ctxOf(state)))
 		elseif state.switcher then region("layer", { Create.scrim("ws-pop"), switcher(state) })
+		elseif state.bulk then region("layer", { Create.scrim("cm-unpop"), Create.popover(state.bulk, ctxOf(state)) })
 		else nil
 	return { main = region("main", kids), dock = dock(state), layer = layer }
 end
@@ -1574,6 +1830,7 @@ tern.block.define("board", {
 			view = if kvGet("linear-todo.view") == "list" then "list" else "kanban",
 			mine = kvGet("linear-todo.mine") == true,
 			folded = {},
+			picked = {},
 		}
 		-- Copied key by key: stored tables may be read-only.
 		local folded = kvGet("linear-todo.folded")
@@ -1634,6 +1891,12 @@ tern.block.define("board", {
 			end
 			return
 		end
+		-- The bulk list's search box.
+		local b = state.bulk
+		if b and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
+			Create.event(b, ev)
+			return
+		end
 		local e = state.edit
 		if ev.ev == "edit" or ev.ev == "undo" then
 			if e and ev.id == e.field.id then
@@ -1652,6 +1915,12 @@ tern.block.define("board", {
 			if e and ev.id ~= e.field.id then
 				endEdit(state, false)
 			end
+			return
+		end
+		-- A tick box: Shift extends the selection from the last one ticked.
+		if ev.ev == "change" and ev.name == "pick" and type(ev.value) == "string" then
+			local mods = if type(ev.mods) == "table" then ev.mods else {}
+			act(state, if table.find(mods, "shift") then "pick-range" else "pick", ev.value, cx)
 			return
 		end
 		if ev.ev ~= "action" or type(ev.act) ~= "string" then

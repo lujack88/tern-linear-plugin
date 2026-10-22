@@ -115,6 +115,30 @@ function M.list(cols: { Column }): { any }
 	return out
 end
 
+-- The ids of `list` from `a` to `b` inclusive, in list order either way (a Shift-click range);
+-- just `b` when `a` is not in the list, nothing when `b` is not.
+function M.range(list: { any }, a: string, b: string): { string }
+	local ia: number?, ib: number? = nil, nil
+	for i, x in list do
+		if x.id == a then
+			ia = i
+		end
+		if x.id == b then
+			ib = i
+		end
+	end
+	if not ib then
+		return {}
+	elseif not ia then
+		return { b }
+	end
+	local out: { string } = {}
+	for i = math.min(ia, ib), math.max(ia, ib) do
+		table.insert(out, list[i].id)
+	end
+	return out
+end
+
 -- Index of the column holding `stateId`, or nil.
 function M.columnIndex(cols: { Column }, stateId: string?): number?
 	for i, col in cols do

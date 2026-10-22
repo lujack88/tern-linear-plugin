@@ -157,6 +157,29 @@ Undo the last edit with the undo bar (shown for 10 s) or `Ctrl+Z` / `Cmd+Z`.
 Undo is one step: a move or rename returns to the previous value, a create
 cancels the new issue, a cancel restores the previous State.
 
+## Selecting several issues
+
+| Action | Key |
+| --- | --- |
+| Select / unselect an issue | click its checkbox (left of a row, top-left of a card), or `x` on the keyboard-selected issue |
+| Select a range | `Shift`-click a checkbox: every issue from the last one ticked, in the board's order |
+| Clear the selection | `Esc`, or `×` in the bar |
+
+The checkbox shows when you hover an issue, and on every issue while any is
+selected; selected issues are tinted. Clicking the rest of the row or card still
+opens the issue. The selection is not saved; issues that are canceled, synced
+away, or hidden by Mine leave it, and switching workspaces clears it.
+
+While at least one issue is selected, a bar at the bottom shows how many and:
+
+- **Status ▾**, **Priority ▾**, **Assignee ▾**: the New issue modal's lists
+  (`↑`/`↓`, `Enter`, `Esc`); the pick is written to every selected issue.
+- **Cancel issues**: click twice (**Cancel N?**); cancels every selected issue
+  and clears the selection.
+
+One undo (the undo bar or `Ctrl+Z`) reverts the whole bulk edit. The selection
+stays after a Status, Priority or Assignee change, as in Linear.
+
 ## Commands
 
 | Command | What it does |

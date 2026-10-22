@@ -285,6 +285,17 @@ local cases: { { name: string, fn: () -> () } } = {
 			check(string.find(bare, "could not be loaded", 1, true) ~= nil and string.find(bare, "No priority", 1, true) ~= nil, "unloaded")
 		end,
 	},
+	{
+		name = "range",
+		fn = function()
+			local list = { issue(1, "todo"), issue(2, "todo"), issue(3, "prog"), issue(4, "done") }
+			check(table.concat(Model.range(list, "i2", "i4"), ",") == "i2,i3,i4", "down")
+			check(table.concat(Model.range(list, "i3", "i1"), ",") == "i1,i2,i3", "up")
+			check(table.concat(Model.range(list, "i2", "i2"), ",") == "i2", "one")
+			check(table.concat(Model.range(list, "gone", "i3"), ",") == "i3", "anchor gone")
+			check(#Model.range(list, "i1", "gone") == 0, "target gone")
+		end,
+	},
 }
 
 -- Runs every case; returns how many passed and the first failure as "<case>: <msg>".
