@@ -472,7 +472,8 @@ tern.on("title", function(ev: TitleEvent, cx: WindowCx)
 	end
 	-- omp has no plan-mode flag; this overlay sets plan.defaultOnStartup for the new chat only.
 	local command = 'omp --config "' .. tern.plugin.dir .. '/plan-mode.yml"'
-	local ok, err = pcall(cx.agents.start, cx.agents, { prompt = prompt, cwd = cwd, command = command })
+	-- Own tab, not a split of the board's tab, so it shows in the tab list.
+	local ok, err = pcall(cx.agents.start, cx.agents, { prompt = prompt, cwd = cwd, command = command, how = "tab" })
 	if not ok then
 		cx:toast("error", "Could not start omp", tostring(err))
 	end

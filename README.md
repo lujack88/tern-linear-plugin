@@ -103,8 +103,8 @@ icon and title Tern's tab list shows (the tab's name, else the pane title, e.g.
 for example `fixit-app · sonnet · idle`; a working or waiting chat gets an
 accent dot. Pick one to send it the issue
 (or the selection, up to 10): a message that starts "Here is Linear issue
-TES-4 for context:" with the same fields and description as Start, but no
-instruction. A busy chat queues it. The chat's pane is shown; Carly opens with
+TES-4:" with the same fields, description and workflow as Start. A busy chat
+queues it. The chat's pane is shown; Carly opens with
 the message.
 
 Keys while it is open: `↑`/`↓` (or `K`/`J`) move, `Enter` runs, `→`/`Enter` opens
@@ -199,10 +199,33 @@ untouched keeps the template's own formatting.
 | Start or send to a session | click a row's **▾** (the right part of its **▷ Start** split button) or a card's **▷**: **▷ New chat**, or **Send to a session ▸** (the **Send to chat ▸** list) |
 
 Start opens a new omp chat in plan mode. Its first message is the issue:
-identifier, title, URL, State, priority, assignee, labels and description. It
-tells omp to grill you about the approach with the `grilling` skill, then write
-the plan, and to implement nothing until you approve it. The chat runs in the
-board pane's directory, else your home.
+identifier, title, URL, State, priority, assignee, labels and description
+(fields the issue leaves unset are left out), then the workflow:
+
+1. **Plan**: load skill://grill-with-docs, read the relevant code and grill
+   you on the approach. Then load skill://show-me to show the approach visually
+   and write the plan. Implement nothing until you approve; write the
+   grill-with-docs docs after approval.
+2. **Build**: move the Linear issue(s) to In Progress and comment the approved
+   plan on them. Split the work into independent slices for parallel subagents
+   and verify each result. Work on a branch and open a PR.
+3. **Ship**: comment the PR link on the Linear issue(s) and move them to In
+   Review (or the team's review state). Have reviewer subagents review the PR
+   and fix their findings. Then omp runs a quick QA itself: runs it and
+   exercises the changed behavior. Omp merges by default. For difficult PRs
+   (risky, large, or hard to verify), omp first asks the advisor whether
+   human QA is needed; if it is, omp tells you why and waits for your OK
+   before merging. Omp comments when it merges and leaves the issue(s) in
+   review.
+4. **Hand over**: omp reports what changed, the PR link, and the exact QA
+   steps it ran with their results, then runs skill://visual-pr last so its
+   output is the final message, for your final review.
+
+If the work turns out very complicated at any step, omp is told to stop, say
+why and wait for your go-ahead. The skills must be installed where omp finds
+them. Linear updates need a Linear tool (e.g. the Linear MCP) in that chat.
+The chat opens in its own tab and runs in the board pane's directory, else
+your home.
 
 `✕` (or `Delete` pressed twice) cancels an issue: it moves to the team's
 Canceled State. The plugin never deletes issues.
@@ -233,8 +256,8 @@ While at least one issue is selected, a bar at the bottom shows how many and:
   and clears the selection.
 - **▷ Start** (2 or more selected): opens one new omp chat on all of them, in
   the board's order, up to 10 issues. Its first message lists each issue's
-  fields and description and asks for one plan covering all of them. The
-  selection stays.
+  fields and description and the same workflow, with one plan covering all of
+  them. The selection stays.
 
 One undo (the undo bar or `Ctrl+Z`) reverts the whole bulk edit. The selection
 stays after a Status, Priority or Assignee change, as in Linear.

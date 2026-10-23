@@ -518,26 +518,39 @@ function M.cleanRewrite(out: string): string?
 	return if s == "" then nil else s
 end
 
-local GRILL = "Load and follow the `grilling` skill (skill://grilling): interrogate me about the approach before anything is implemented.\n\n"
+-- The workflow closing every Start and Send to chat message; `plan` is what to write ("the plan", "ONE plan covering all of them").
+local function brief(plan: string): string
+	return "Workflow:\n"
+		.. "1. Plan: load skill://grill-with-docs, read the relevant code and grill me on the approach. Then load skill://show-me to show it visually and write " .. plan .. ". Implement nothing until I approve; write the grill-with-docs docs after approval.\n"
+		.. "2. Build: move the Linear issue(s) to In Progress and comment the approved plan on them. Split the work into independent slices for parallel subagents and verify each result. Work on a branch and open a PR.\n"
+		.. "3. Ship: comment the PR link on the Linear issue(s) and move them to In Review (or the team's review state). Have reviewer subagents review the PR and fix their findings. Then QA it yourself quickly: run it and exercise the changed behavior. Merge by default. If the PR is difficult (risky, large, or hard to verify), first ask the advisor whether it needs human QA; if it does, tell me why and wait for my OK before merging. Comment on the issue(s) when it merges. Leave the issue(s) in review.\n"
+		.. "4. Hand over for my final review: report what changed, the PR link, and the exact QA steps you ran with their results. Then run skill://visual-pr for the PR last, so its output is your final message.\n\n"
+		.. "If the work turns out very complicated at any step, stop, tell me why and wait for my go-ahead."
+end
 
--- URL, State, Priority, Assignee and Labels of `issue`, one "- " line each.
+-- URL, State, Priority, Assignee and Labels of `issue`, one "- " line each; unset ones are left out.
 local function startFacts(issue: any, stateName: string?): string
-	local prio = M.PRIORITIES[1].label
+	local lines = { "- URL: " .. tostring(issue.url) }
+	if stateName then
+		table.insert(lines, "- State: " .. stateName)
+	end
 	for _, p in M.PRIORITIES do
-		if p.value == issue.priority then
-			prio = p.label
+		if p.value == issue.priority and p.value ~= 0 then
+			table.insert(lines, "- Priority: " .. p.label)
 		end
 	end
 	local a = issue.assignee
+	if type(a) == "table" and a.name then
+		table.insert(lines, "- Assignee: " .. a.name)
+	end
 	local labels = {}
 	for _, l in (if type(issue.labels) == "table" and type(issue.labels.nodes) == "table" then issue.labels.nodes else {}) do
 		table.insert(labels, l.name)
 	end
-	return "- URL: " .. tostring(issue.url) .. "\n"
-		.. "- State: " .. (stateName or "unknown") .. "\n"
-		.. "- Priority: " .. prio .. "\n"
-		.. "- Assignee: " .. (if type(a) == "table" and a.name then a.name else "unassigned") .. "\n"
-		.. "- Labels: " .. (if #labels > 0 then table.concat(labels, ", ") else "none") .. "\n"
+	if #labels > 0 then
+		table.insert(lines, "- Labels: " .. table.concat(labels, ", "))
+	end
+	return table.concat(lines, "\n") .. "\n"
 end
 
 local function startDescription(description: string?): string
@@ -547,20 +560,16 @@ local function startDescription(description: string?): string
 		else "(no description)"
 end
 
--- One issue's fields and description: the body of a single-issue message.
-local function issueBody(issue: any, title: string, stateName: string?, description: string?): string
-	return "- Identifier: " .. issue.identifier .. "\n"
-		.. "- Title: " .. title .. "\n"
-		.. startFacts(issue, stateName) .. "\n"
-		.. "## Description\n\n" .. startDescription(description)
+-- One issue's facts and description: the body of a single-issue message (the lead line names it).
+local function issueBody(issue: any, stateName: string?, description: string?): string
+	return startFacts(issue, stateName) .. "\n## Description\n\n" .. startDescription(description)
 end
 
 -- The first message of an omp chat started on `issue`; `description` nil means it could not be loaded.
 function M.startPrompt(issue: any, title: string, stateName: string?, description: string?): string
 	return "Start working on Linear issue " .. issue.identifier .. ": " .. title .. ".\n\n"
-		.. GRILL
-		.. issueBody(issue, title, stateName, description) .. "\n\n"
-		.. "Read the relevant code, grill me per the grilling skill, then write the plan. Do not implement anything until I approve the plan."
+		.. issueBody(issue, stateName, description) .. "\n\n"
+		.. brief("the plan")
 end
 
 -- One issue of a multi-issue message; `description` nil means it could not be loaded.
@@ -582,20 +591,20 @@ end
 function M.startPromptMany(entries: { StartEntry }): string
 	local idents, parts = sections(entries)
 	return "Start working on these " .. #entries .. " Linear issues together: " .. idents .. ".\n\n"
-		.. GRILL
 		.. parts
-		.. "Read the relevant code, grill me per the grilling skill, then write ONE plan covering all of them. Do not implement anything until I approve the plan."
+		.. brief("ONE plan covering all of them")
 end
 
--- "Send to chat": `entries` handed to an open chat as context, with no instruction.
+-- "Send to chat": `entries` handed to an open chat, with the same workflow as Start.
 function M.contextPrompt(entries: { StartEntry }): string
 	if #entries == 1 then
 		local e = entries[1]
-		return "Here is Linear issue " .. e.issue.identifier .. " for context: " .. e.title .. ".\n\n"
-			.. issueBody(e.issue, e.title, e.stateName, e.description)
+		return "Here is Linear issue " .. e.issue.identifier .. ": " .. e.title .. ".\n\n"
+			.. issueBody(e.issue, e.stateName, e.description) .. "\n\n"
+			.. brief("the plan")
 	end
 	local idents, parts = sections(entries)
-	return "Here are " .. #entries .. " Linear issues for context: " .. idents .. ".\n\n" .. (string.gsub(parts, "\n+$", ""))
+	return "Here are " .. #entries .. " Linear issues: " .. idents .. ".\n\n" .. parts .. brief("ONE plan covering all of them")
 end
 
 -- Agents with their own tile icon in Tern's tab list; others get the generic agent tile.
