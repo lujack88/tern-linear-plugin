@@ -518,14 +518,64 @@ function M.cleanRewrite(out: string): string?
 	return if s == "" then nil else s
 end
 
--- The workflow closing every Start and Send to chat message; `plan` is what to write ("the plan", "ONE plan covering all of them").
-local function brief(plan: string): string
-	return "Workflow:\n"
-		.. "1. Plan: load skill://grill-with-docs, read the relevant code and grill me on the approach. Then load skill://show-me to show it visually and write " .. plan .. ". Implement nothing until I approve; write the grill-with-docs docs after approval.\n"
-		.. "2. Build: move the Linear issue(s) to In Progress and comment the approved plan on them. Split the work into independent slices for parallel subagents and verify each result. Work on a branch and open a PR.\n"
-		.. "3. Ship: comment the PR link on the Linear issue(s) and move them to In Review (or the team's review state). Have reviewer subagents review the PR and fix their findings. Then QA it yourself quickly: run it and exercise the changed behavior. Merge by default. If the PR is difficult (risky, large, or hard to verify), first ask the advisor whether it needs human QA; if it does, tell me why and wait for my OK before merging. Comment on the issue(s) when it merges. Leave the issue(s) in review.\n"
-		.. "4. Hand over for my final review: report what changed, the PR link, and the exact QA steps you ran with their results. Then run skill://visual-pr for the PR last, so its output is your final message.\n\n"
-		.. "If the work turns out very complicated at any step, stop, tell me why and wait for my go-ahead."
+-- One issue of a multi-issue message; `description` nil means it could not be loaded.
+export type StartEntry = { issue: any, title: string, stateName: string?, description: string? }
+
+-- The workflow closing every Start and Send to chat message: for one issue, or (2+ entries) one plan over all.
+local function brief(entries: { StartEntry }): string
+	local idents, fixes = {}, {}
+	for _, e in entries do
+		table.insert(idents, e.issue.identifier)
+		table.insert(fixes, "Fixes " .. e.issue.identifier)
+	end
+	local one = #entries == 1
+	local subs = {
+		fetch = if one then "the issue" else "each issue",
+		any = if one then "the issue" else "any issue",
+		scope = if one then "this issue" else "these issues",
+		plan = if one then "Write the plan." else "Write ONE plan covering all of them.",
+		branch = if one then "Linear's gitBranchName" else "the first issue's Linear gitBranchName",
+		prTitle = if one then idents[1] .. ": " .. entries[1].title else table.concat(idents, ", ") .. ": <short summary>",
+		fixes = table.concat(fixes, ", "),
+	}
+	return (string.gsub([==[
+## Before you start
+
+- Fetch {fetch} from Linear (get_issue + list_comments): comments, attachments, sub-issues, parent, blockers, gitBranchName. The description above may be empty or stale.
+- If {any} is Done, Canceled, or blocked by an open issue: stop and ask me.
+- Scope is {scope} plus anything you judge related. Name every extra issue you pull in during the plan; I approve scope with the plan.
+
+## Hard stops — ask me and wait. Nothing else needs my input.
+
+1. Before implementing anything: I must approve the plan.
+2. Before merging, if ANY of: migrations, auth, payments, RLS or security-definer SQL changed; >15 files or >500 lines; you could not run the changed behavior in QA; a reviewer says it needs human QA. Tell me why.
+3. Any time the work becomes much larger or riskier than the approved plan: stop, say why.
+
+## 1. Plan
+
+- Load skill://grill-with-docs (if it fails to load, load skill://grilling and skill://domain-modeling instead). Read the relevant code, then grill me on the approach using the ask tool.
+- Load skill://show-me and show the plan visually. {plan}
+- Implement nothing until I approve. After approval, write the grill-with-docs docs (ADRs, glossary).
+
+## 2. Build
+
+- Move the issue(s) to In Progress and comment a summary of the approved plan (≤20 lines).
+- Branch from main using {branch}.
+- If the work splits into independent slices, run them as parallel subagents and verify each result yourself. Otherwise do it inline.
+- Open a PR: title `{prTitle}`; body `## Summary`, `{fixes}`, `## Testing`.
+
+## 3. Ship
+
+- Comment the PR link on the issue(s) and move them to In Review (use list_issue_statuses if the team's review state is named differently).
+- Have a reviewer subagent review the PR (add a security-reviewer when the diff touches auth, data access, or SQL). Fix all findings. Max 2 rounds; carry leftovers to the handover.
+- QA it yourself: run it and exercise the changed behavior. Record the exact steps and results.
+- Merge (merge commit) unless hard stop 2 applies.
+- After merge: comment on the issue(s) that it merged. Linear's GitHub integration moves merged issues to Done — wait for that, then move them back to In Review. I move them to Done myself.
+
+## 4. Handover
+
+- Report: what changed, PR link, exact QA steps with results, reviewer findings you did not fix.
+- Then run skill://visual-pr on the PR. Its output must be your final message.]==], "{(%w+)}", subs))
 end
 
 -- URL, State, Priority, Assignee and Labels of `issue`, one "- " line each; unset ones are left out.
@@ -569,11 +619,8 @@ end
 function M.startPrompt(issue: any, title: string, stateName: string?, description: string?): string
 	return "Start working on Linear issue " .. issue.identifier .. ": " .. title .. ".\n\n"
 		.. issueBody(issue, stateName, description) .. "\n\n"
-		.. brief("the plan")
+		.. brief({ { issue = issue, title = title, stateName = stateName, description = description } })
 end
-
--- One issue of a multi-issue message; `description` nil means it could not be loaded.
-export type StartEntry = { issue: any, title: string, stateName: string?, description: string? }
 
 -- "TES-4, TES-11" and one "## TES-4: title" section per entry, each ending in a blank line.
 local function sections(entries: { StartEntry }): (string, string)
@@ -592,7 +639,7 @@ function M.startPromptMany(entries: { StartEntry }): string
 	local idents, parts = sections(entries)
 	return "Start working on these " .. #entries .. " Linear issues together: " .. idents .. ".\n\n"
 		.. parts
-		.. brief("ONE plan covering all of them")
+		.. brief(entries)
 end
 
 -- "Send to chat": `entries` handed to an open chat, with the same workflow as Start.
@@ -601,10 +648,10 @@ function M.contextPrompt(entries: { StartEntry }): string
 		local e = entries[1]
 		return "Here is Linear issue " .. e.issue.identifier .. ": " .. e.title .. ".\n\n"
 			.. issueBody(e.issue, e.stateName, e.description) .. "\n\n"
-			.. brief("the plan")
+			.. brief(entries)
 	end
 	local idents, parts = sections(entries)
-	return "Here are " .. #entries .. " Linear issues: " .. idents .. ".\n\n" .. parts .. brief("ONE plan covering all of them")
+	return "Here are " .. #entries .. " Linear issues: " .. idents .. ".\n\n" .. parts .. brief(entries)
 end
 
 -- Agents with their own tile icon in Tern's tab list; others get the generic agent tile.

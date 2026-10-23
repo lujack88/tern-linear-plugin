@@ -202,30 +202,43 @@ Start opens a new omp chat in plan mode. Its first message is the issue:
 identifier, title, URL, State, priority, assignee, labels and description
 (fields the issue leaves unset are left out), then the workflow:
 
-1. **Plan**: load skill://grill-with-docs, read the relevant code and grill
-   you on the approach. Then load skill://show-me to show the approach visually
-   and write the plan. Implement nothing until you approve; write the
-   grill-with-docs docs after approval.
-2. **Build**: move the Linear issue(s) to In Progress and comment the approved
-   plan on them. Split the work into independent slices for parallel subagents
-   and verify each result. Work on a branch and open a PR.
-3. **Ship**: comment the PR link on the Linear issue(s) and move them to In
-   Review (or the team's review state). Have reviewer subagents review the PR
-   and fix their findings. Then omp runs a quick QA itself: runs it and
-   exercises the changed behavior. Omp merges by default. For difficult PRs
-   (risky, large, or hard to verify), omp first asks the advisor whether
-   human QA is needed; if it is, omp tells you why and waits for your OK
-   before merging. Omp comments when it merges and leaves the issue(s) in
-   review.
-4. **Hand over**: omp reports what changed, the PR link, and the exact QA
-   steps it ran with their results, then runs skill://visual-pr last so its
-   output is the final message, for your final review.
+- **Before you start**: omp fetches the issue from Linear (comments,
+  attachments, sub-issues, parent, blockers, branch name), since the
+  description may be empty or stale. If the issue is Done, Canceled or blocked
+  by an open issue, omp stops and asks you. The scope is the issue plus
+  anything omp judges related; it names every extra issue in the plan, and you
+  approve the scope with the plan.
+- **Hard stops**: omp asks you and waits at three points, and nowhere else:
+  you must approve the plan before anything is implemented; you must approve
+  a merge when the PR changes migrations, auth, payments, RLS or
+  security-definer SQL, touches more than 15 files or 500 lines, could not be
+  run in QA, or a reviewer says it needs human QA (omp tells you why); and
+  whenever the work becomes much larger or riskier than the approved plan.
 
-If the work turns out very complicated at any step, omp is told to stop, say
-why and wait for your go-ahead. The skills must be installed where omp finds
-them. Linear updates need a Linear tool (e.g. the Linear MCP) in that chat.
-The chat opens in its own tab and runs in the board pane's directory, else
-your home.
+Then four steps:
+
+1. **Plan**: omp loads skill://grill-with-docs, reads the relevant code and
+   grills you on the approach with the ask tool, then loads skill://show-me to
+   show the plan visually and writes it. Nothing is implemented until you
+   approve; after that omp writes the grill-with-docs docs (ADRs, glossary).
+2. **Build**: omp moves the issue(s) to In Progress, comments a summary of the
+   plan, and branches from main using Linear's branch name. Independent slices
+   run as parallel subagents, each result verified. omp opens a PR titled
+   `ID: title` with Summary, `Fixes ID` and Testing.
+3. **Ship**: omp comments the PR link and moves the issue(s) to In Review. A
+   reviewer subagent (plus a security reviewer for auth, data access or SQL)
+   reviews the PR; omp fixes the findings, in at most 2 rounds. omp then QAs
+   it itself, records the steps and results, and merges unless a hard stop
+   applies. After the merge it comments on the issue(s); Linear's GitHub
+   integration moves them to Done, and omp moves them back to In Review. You
+   move them to Done yourself.
+4. **Handover**: omp reports what changed, the PR link, the exact QA steps
+   with results and any reviewer findings it did not fix, then runs
+   skill://visual-pr on the PR so its output is the final message.
+
+The skills must be installed where omp finds them. Linear updates need a
+Linear tool (e.g. the Linear MCP) in that chat. The chat opens in its own tab
+and runs in the board pane's directory, else your home.
 
 `✕` (or `Delete` pressed twice) cancels an issue: it moves to the team's
 Canceled State. The plugin never deletes issues.

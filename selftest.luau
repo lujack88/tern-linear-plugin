@@ -275,23 +275,41 @@ local cases: { { name: string, fn: () -> () } } = {
 		name = "workflow brief",
 		fn = function()
 			local e = { issue = issue(4, "todo"), title = "Fix it", stateName = "Todo", description = "Steps here" }
+			local e2 = { issue = issue(11, "todo"), title = "Other", stateName = "Todo", description = "More" }
 			local prompts = {
-				Model.startPrompt(e.issue, e.title, e.stateName, e.description),
-				Model.startPromptMany({ e, e }),
-				Model.contextPrompt({ e }),
-				Model.contextPrompt({ e, e }),
+				{ Model.startPrompt(e.issue, e.title, e.stateName, e.description), false },
+				{ Model.startPromptMany({ e, e2 }), true },
+				{ Model.contextPrompt({ e }), false },
+				{ Model.contextPrompt({ e, e2 }), true },
 			}
-			local steps = { "skill://grill-with-docs", "skill://show-me", "Implement nothing until I approve", "In Progress", "subagents", "open a PR", "In Review", "reviewer subagents", "QA it yourself", "advisor", "needs human QA", "skill://visual-pr", "Merge by default", "Leave the issue(s) in review", "exact QA steps", "final message", "human QA", "wait for my OK before merging" }
-			for i, p in prompts do
-				local at = string.find(p, "Steps here", 1, true) or math.huge
-				for _, want in steps do
-					local s = string.find(p, want, 1, true)
-					check(s ~= nil and s > at, i .. ": " .. want .. " after the issue")
+			local heads = { "## Before you start", "## Hard stops", "## 1. Plan", "## 2. Build", "## 3. Ship", "## 4. Handover" }
+			local function find(p: string, s: string, from: number?): number?
+				return (string.find(p, s, from or 1, true))
+			end
+			for i, item in prompts do
+				local p, multi = item[1] :: string, item[2] :: boolean
+				local at = find(p, "Steps here") or 0
+				check(at > 0, i .. ": description")
+				for _, h in heads do
+					local s = find(p, h)
+					check(s ~= nil and s > at and find(p, h, s + 1) == nil, i .. ": " .. h .. " once, after the issue")
+					at = s or at
 				end
-				local qa, vp = string.find(p, "exact QA steps", 1, true), string.find(p, "skill://visual-pr", 1, true)
-				check(qa ~= nil and vp ~= nil and vp > qa, i .. ": visual-pr after the hand-over")
-				local _, n = string.gsub(p, "Workflow:", "")
-				check(n == 1, i .. ": brief once")
+				for _, want in { "skill://grill-with-docs", "skill://show-me", "skill://visual-pr" } do
+					check(find(p, want) ~= nil, i .. ": " .. want)
+				end
+				check((find(p, "skill://visual-pr") or 0) > (find(p, "## 4. Handover") or math.huge), i .. ": visual-pr after the handover")
+				local tail = "Its output must be your final message."
+				check(string.sub(p, -#tail) == tail, i .. ": ends with the final message")
+				if multi then
+					for _, want in { "Write ONE plan covering all of them.", "Fixes ENG-4", "Fixes ENG-11" } do
+						check(find(p, want) ~= nil, i .. ": " .. want)
+					end
+				else
+					for _, want in { "title `ENG-4: Fix it`", "Fixes ENG-4" } do
+						check(find(p, want) ~= nil, i .. ": " .. want)
+					end
+				end
 			end
 		end,
 	},
