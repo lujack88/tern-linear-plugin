@@ -217,10 +217,13 @@ identifier, title, URL, State, priority, assignee, labels and description
 
 Then four steps:
 
-1. **Plan**: omp thinks it through, reads the relevant code and grills you
-   with skill://grill-with-docs, decides whether a look check (up to 3 visual
+1. **Plan**: omp thinks it through, reads the relevant code and loads
+   skill://domain-modeling. It asks you at most 5 questions, only on product
+   scope, hard-to-reverse choices or where no safe default exists, and lists
+   its other decisions as defaults in the plan. It decides whether a look
+   check (up to 3 visual
    variants) is needed, and shows the plan with skill://show-me. Nothing is
-   implemented until you approve; then it writes the grill-with-docs docs.
+   implemented until you approve; then it writes the domain-modeling docs.
 2. **Build**: omp moves the issue(s) to In Progress, comments the plan, and
    works in its own git worktree from fresh `origin/main` on Linear's branch
    name. Implementation goes to task subagents (parallel for independent

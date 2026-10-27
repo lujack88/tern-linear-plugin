@@ -553,9 +553,10 @@ local function brief(entries: { StartEntry }): string
 
 ## 1. Plan
 
-- ultrathink, read the relevant code, then grill me with the ask tool using skill://grill-with-docs (if it won't load: skill://grilling and skill://domain-modeling).
+- ultrathink and read the relevant code. Load skill://domain-modeling and keep to the repo's glossary and ADRs.
+- Ask me (ask tool, at most 5 questions) only about product scope, hard-to-reverse choices, or where no safe default exists. Decide the rest yourself and list those decisions as defaults in the plan.
 - Look check: yes when the deliverable is mainly how a page looks or feels. Then ask no taste questions; plan up to 3 variants.
-- {plan} Show it with skill://show-me. After approval, write the grill-with-docs docs.
+- {plan} Show it with skill://show-me. After approval, write the domain-modeling docs (ADRs, glossary).
 
 ## 2. Build
 

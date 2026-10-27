@@ -295,7 +295,7 @@ local cases: { { name: string, fn: () -> () } } = {
 					check(s ~= nil and s > at and find(p, h, s + 1) == nil, i .. ": " .. h .. " once, after the issue")
 					at = s or at
 				end
-				for _, want in { "skill://grill-with-docs", "skill://show-me", "skill://visual-pr" } do
+				for _, want in { "skill://domain-modeling", "skill://show-me", "skill://visual-pr" } do
 					check(find(p, want) ~= nil, i .. ": " .. want)
 				end
 				check((find(p, "skill://visual-pr") or 0) > (find(p, "## 4. Handover") or math.huge), i .. ": visual-pr after the handover")
