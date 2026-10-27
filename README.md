@@ -208,32 +208,42 @@ identifier, title, URL, State, priority, assignee, labels and description
   by an open issue, omp stops and asks you. The scope is the issue plus
   anything omp judges related; it names every extra issue in the plan, and you
   approve the scope with the plan.
-- **Hard stops**: omp asks you and waits at three points, and nowhere else:
-  you must approve the plan before anything is implemented; you must approve
-  a merge when the PR changes migrations, auth, payments, RLS or
-  security-definer SQL, touches more than 15 files or 500 lines, could not be
-  run in QA, or a reviewer says it needs human QA (omp tells you why); and
-  whenever the work becomes much larger or riskier than the approved plan.
+- **Hard stops**: omp asks you and waits at four points, and nowhere else:
+  plan approval; the look check, when the plan has one; before a merge that
+  changes migrations, auth, payments, RLS or security-definer SQL, touches more
+  than 15 files or 500 lines, could not be run in QA, or a reviewer says needs
+  human QA (omp tells you why); and whenever the work becomes much larger or
+  riskier than planned.
 
 Then four steps:
 
-1. **Plan**: omp loads skill://grill-with-docs, reads the relevant code and
-   grills you on the approach with the ask tool, then loads skill://show-me to
-   show the plan visually and writes it. Nothing is implemented until you
-   approve; after that omp writes the grill-with-docs docs (ADRs, glossary).
-2. **Build**: omp moves the issue(s) to In Progress, comments a summary of the
-   plan, and branches from main using Linear's branch name. Independent slices
-   run as parallel subagents, each result verified. omp opens a PR titled
-   `ID: title` with Summary, `Fixes ID` and Testing.
-3. **Ship**: omp comments the PR link and moves the issue(s) to In Review. A
-   reviewer subagent (plus a security reviewer for auth, data access or SQL)
-   reviews the PR; omp fixes the findings, in at most 2 rounds. omp then QAs
-   it itself, records the steps and results, and merges unless a hard stop
-   applies. After the merge it comments on the issue(s); Linear's GitHub
-   integration moves them to Done, and omp moves them back to In Review. You
-   move them to Done yourself.
-4. **Handover**: omp reports what changed, the PR link, the exact QA steps
-   with results and any reviewer findings it did not fix, then runs
+1. **Plan**: omp thinks it through, reads the relevant code and grills you
+   with skill://grill-with-docs, decides whether a look check (up to 3 visual
+   variants) is needed, and shows the plan with skill://show-me. Nothing is
+   implemented until you approve; then it writes the grill-with-docs docs.
+2. **Build**: omp moves the issue(s) to In Progress, comments the plan, and
+   works in its own git worktree from fresh `origin/main` on Linear's branch
+   name. Implementation goes to task subagents (parallel for independent
+   slices), each result verified. The chat runs with `task.prewalk` on, so
+   each generic task subagent plans on your `task` model role and hands off
+   to your `smol` role at its first edit (skipped when both are the same
+   model). omp opens a PR titled `ID: title` with Summary, `Fixes ID` and
+   Testing; with a look check it opens a draft, shows you the Vercel preview
+   variants and iterates on your preview comments.
+3. **Ship**: omp comments the PR link and moves the issue(s) to In Review.
+   Reviews are sized by risk and see only the diff and the plan: one
+   reviewer for a small diff (5 files, 200 lines or fewer), two otherwise, plus
+   a security reviewer when auth, data access, RLS or SQL changed (generic
+   reviewers run on Sonnet 5.5, the security reviewer on Opus 5.5, set in
+   `plan-mode.yml`); one round. omp turns the acceptance criteria into a QA
+   checklist and hands it to a `sonic` subagent, which returns only a
+   pass/fail table (re-run for failed rows after fixes) that goes in the PR.
+   omp merges once PR checks pass, unless a hard stop applies. After the merge
+   it hands the issue(s) to the QA owner named in AGENTS.md, if any, with a
+   checklist of only what CI and the QA table can't prove, and removes the
+   worktree.
+4. **Handover**: omp reports what changed, the PR link, the QA table and any
+   reviewer findings it did not fix, then runs
    skill://visual-pr on the PR so its output is the final message.
 
 The skills must be installed where omp finds them. Linear updates need a

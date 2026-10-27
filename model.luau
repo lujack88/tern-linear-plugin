@@ -541,41 +541,41 @@ local function brief(entries: { StartEntry }): string
 	return (string.gsub([==[
 ## Before you start
 
-- Fetch {fetch} from Linear (get_issue + list_comments): comments, attachments, sub-issues, parent, blockers, gitBranchName. The description above may be empty or stale.
-- If {any} is Done, Canceled, or blocked by an open issue: stop and ask me.
-- Scope is {scope} plus anything you judge related. Name every extra issue you pull in during the plan; I approve scope with the plan.
+- Fetch {fetch} from Linear (get_issue, list_comments): comments, attachments, sub-issues, parent, blockers, gitBranchName; the text above may be stale. If {any} is Done, Canceled or blocked by an open issue, stop and ask me.
+- Scope: {scope} plus anything related; name every extra issue in the plan.
 
-## Hard stops — ask me and wait. Nothing else needs my input.
+## Hard stops: ask me and wait. Nothing else needs my input.
 
-1. Before implementing anything: I must approve the plan.
-2. Before merging, if ANY of: migrations, auth, payments, RLS or security-definer SQL changed; >15 files or >500 lines; you could not run the changed behavior in QA; a reviewer says it needs human QA. Tell me why.
-3. Any time the work becomes much larger or riskier than the approved plan: stop, say why.
+1. Plan approval, before any implementation.
+2. The look check, if the plan has one.
+3. Before merge, if migrations, auth, payments, RLS or security-definer SQL changed; >15 files or >500 lines; you could not QA the changed behavior; or a reviewer asks for human QA. Say why.
+4. Whenever the work grows much larger or riskier than planned.
 
 ## 1. Plan
 
-- Load skill://grill-with-docs (if it fails to load, load skill://grilling and skill://domain-modeling instead). Read the relevant code, then grill me on the approach using the ask tool.
-- Load skill://show-me and show the plan visually. {plan}
-- Implement nothing until I approve. After approval, write the grill-with-docs docs (ADRs, glossary).
+- ultrathink, read the relevant code, then grill me with the ask tool using skill://grill-with-docs (if it won't load: skill://grilling and skill://domain-modeling).
+- Look check: yes when the deliverable is mainly how a page looks or feels. Then ask no taste questions; plan up to 3 variants.
+- {plan} Show it with skill://show-me. After approval, write the grill-with-docs docs.
 
 ## 2. Build
 
-- Move the issue(s) to In Progress and comment a summary of the approved plan (≤20 lines).
-- Branch from main using {branch}.
-- If the work splits into independent slices, run them as parallel subagents and verify each result yourself. Otherwise do it inline.
-- Open a PR: title `{prTitle}`; body `## Summary`, `{fixes}`, `## Testing`.
+- Move the issue(s) to In Progress; comment the approved plan (≤20 lines).
+- Work only in a worktree, never the main checkout: `git fetch origin`, `git worktree add ../<repo>.<branch> -b {branch} origin/main` (`/` → `-` in the folder; reuse it if present). Follow its AGENTS.md (it may be newer): setup, commands, QA accounts, previews.
+- Implement through task subagents, in parallel where slices are independent: give each a precise slice and acceptance checks, and verify every result yourself. Keep edits in this chat to small fixes.
+- Commit no scratch files (backups, screenshots, notes, .omp/).
+- PR: title `{prTitle}`; body `## Summary`, `{fixes}`, `## Testing`. Look check: open a draft once the visible part works, open its Vercel preview in my default browser (not your browser tool) and ask me with the pages, states and variant links (`?v=a`, `?v=b`, `?v=c`). Fix my Vercel comments (see AGENTS.md) on this PR, resolve each thread, ask again. After I pick, delete the other variants and mark it ready.
 
 ## 3. Ship
 
-- Comment the PR link on the issue(s) and move them to In Review (use list_issue_statuses if the team's review state is named differently).
-- Have a reviewer subagent review the PR (add a security-reviewer when the diff touches auth, data access, or SQL). Fix all findings. Max 2 rounds; carry leftovers to the handover.
-- QA it yourself: run it and exercise the changed behavior. Record the exact steps and results.
-- Merge (merge commit) unless hard stop 2 applies.
-- After merge: comment on the issue(s) that it merged. Linear's GitHub integration moves merged issues to Done — wait for that, then move them back to In Review. I move them to Done myself.
+- Comment the PR link on the issue(s); move them to In Review (list_issue_statuses if it is named differently).
+- Review sized by risk. Give each reviewer only the PR diff (`gh pr diff`) and the plan, and have it read just the files the diff touches. Small diff (≤5 files, ≤200 lines): one `reviewer`; otherwise two in parallel (correctness; edge cases and UX). Add one `security-reviewer` only when auth, data access, RLS or SQL changed. Verify each finding and fix the real ones. One round; re-review only to confirm fixes of blocking findings.
+- Delegate QA: turn the acceptance criteria into a numbered checklist (step, expected result) and give it, with the worktree path, port and QA accounts, to one `sonic` subagent. It returns only a table: # | step | expected | PASS/FAIL | one-line evidence. Don't run QA commands or read their output yourself. After fixes, send back only the failed rows. Put the final table in the PR's `## Testing`.
+- Merge (merge commit) once `gh pr checks --watch` is green, unless stop 3 applies.
+- After merge: if AGENTS.md names a QA owner, post its human-QA comment on the issue(s), checking only what CI and your QA table can't prove (looks, copy, feel, judgement calls); @-mention and assign them, leave the issue(s) In Review and keep your QA accounts. Then remove the worktree once it is clean.
 
 ## 4. Handover
 
-- Report: what changed, PR link, exact QA steps with results, reviewer findings you did not fix.
-- Then run skill://visual-pr on the PR. Its output must be your final message.]==], "{(%w+)}", subs))
+Report what changed, the PR link, the QA table and unfixed findings. Then run skill://visual-pr on the PR, ending with one line: what still needs me, or "Nothing needs you." Its output must be your final message.]==], "{(%w+)}", subs))
 end
 
 -- URL, State, Priority, Assignee and Labels of `issue`, one "- " line each; unset ones are left out.

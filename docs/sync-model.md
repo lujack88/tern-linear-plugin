@@ -31,7 +31,8 @@ to kv `linear-todo.start` and sets the title to `Model.START_TITLE`. The window
 answers with `{act = "started"}`, takes and clears the kv entry, and opens an omp
 chat on it in the board pane's cwd (else `~`). The command is
 `omp --config <plugin dir>/plan-mode.yml`: omp has no plan-mode flag, and that
-overlay sets `plan.defaultOnStartup` for this chat only. A failed description
+overlay sets `plan.defaultOnStartup`, `task.prewalk` and the reviewer models
+(`task.agentModelOverrides`) for this chat only. A failed description
 fetch still starts the chat; the prompt says the description could not be loaded.
 The bulk bar's **▷ Start** and the selection menu's **▷ Start in omp** use the same
 path for up to 10 issues: the descriptions load in parallel, and once all have
