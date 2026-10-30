@@ -280,10 +280,10 @@ While at least one issue is selected, a bar at the bottom shows how many and:
   (`↑`/`↓`, `Enter`, `Esc`); the pick is written to every selected issue.
 - **Cancel issues**: click twice (**Cancel N?**); cancels every selected issue
   and clears the selection.
-- **▷ Start** (2 or more selected): opens one new omp chat on all of them, in
-  the board's order, up to 10 issues. Its first message lists each issue's
-  fields and description and the same workflow, with one plan covering all of
-  them. The selection stays.
+- **▷ Start** (2 or more selected): opens a separate new omp chat for each of
+  them, each in its own tab, in the board's order, up to 10 issues. Each chat
+  starts exactly as a single **▷ Start** on that issue would. To hand several
+  issues to one chat, use **Send to chat ▸**. The selection stays.
 
 One undo (the undo bar or `Ctrl+Z`) reverts the whole bulk edit. The selection
 stays after a Status, Priority or Assignee change, as in Linear.

@@ -36,8 +36,10 @@ overlay sets `plan.defaultOnStartup`, `task.prewalk` and the reviewer models
 fetch still starts the chat; the prompt says the description could not be loaded.
 The bulk bar's **▷ Start** and the selection menu's **▷ Start in omp** use the same
 path for up to 10 issues: the descriptions load in parallel, and once all have
-answered the board writes one `Model.startPromptMany` message, so the window half
-is unchanged.
+answered the board writes a list of `Model.startPrompts` messages, one per issue,
+and the window half opens one omp chat per message, each in its own tab, in the
+board's order. A single Start writes a one-item list; the window half also takes a
+bare string, from a board loaded before the list.
 
 **Send to chat** uses the same title channel twice, because the open chats
 (`cx.agents:list`), `cx.agents:ask`, `cx:ask_carly` and `cx.layout:focus` are all

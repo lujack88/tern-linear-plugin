@@ -278,7 +278,6 @@ local cases: { { name: string, fn: () -> () } } = {
 			local e2 = { issue = issue(11, "todo"), title = "Other", stateName = "Todo", description = "More" }
 			local prompts = {
 				{ Model.startPrompt(e.issue, e.title, e.stateName, e.description), false },
-				{ Model.startPromptMany({ e, e2 }), true },
 				{ Model.contextPrompt({ e }), false },
 				{ Model.contextPrompt({ e, e2 }), true },
 			}
@@ -332,19 +331,20 @@ local cases: { { name: string, fn: () -> () } } = {
 		end,
 	},
 	{
-		name = "startPromptMany",
+		name = "startPrompts",
 		fn = function()
 			local a = issue(4, "todo", { priority = 2, assignee = "Ada" })
-			local p = Model.startPromptMany({
-				{ issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" },
-				{ issue = issue(11, "todo"), title = "Other", stateName = nil, description = nil },
-			})
-			check(string.find(p, "^Start working on these 2 Linear issues together: ENG%-4, ENG%-11%.") ~= nil, "lead")
-			local i4, i11 = string.find(p, "## ENG-4: Fix it", 1, true), string.find(p, "## ENG-11: Other", 1, true)
-			check(i4 ~= nil and i11 ~= nil and i4 < i11, "sections in order")
-			for _, want in { "- Priority: High", "- Assignee: Ada", "### Description\n\nSteps here", "could not be loaded", "ONE plan" } do
-				check(string.find(p, want, 1, true) ~= nil, want)
+			local e = { issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" }
+			local e2 = { issue = issue(11, "todo"), title = "Other", stateName = nil, description = nil }
+			local ps = Model.startPrompts({ e, e2 })
+			check(#ps == 2, "one prompt per issue")
+			check(ps[1] == Model.startPrompt(e.issue, e.title, e.stateName, e.description), "first is ENG-4's Start")
+			check(ps[2] == Model.startPrompt(e2.issue, e2.title, e2.stateName, e2.description), "second is ENG-11's Start")
+			check(string.find(ps[1], "ENG-11", 1, true) == nil and string.find(ps[2], "ENG-4", 1, true) == nil, "no other issue")
+			for _, p in ps do
+				check(string.find(p, "ONE plan", 1, true) == nil, "no shared plan")
 			end
+			check(#Model.startPrompts({}) == 0, "none")
 		end,
 	},
 	{

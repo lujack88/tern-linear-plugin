@@ -459,9 +459,13 @@ tern.on("title", function(ev: TitleEvent, cx: WindowCx)
 		return
 	end
 	send(cx, panes, { ev = "action", act = "started" })
-	local prompt = kvGet(P .. "start")
+	-- One prompt per issue (a lone string from a board loaded before the list).
+	local prompts = kvGet(P .. "start")
 	kvSet(P .. "start", nil)
-	if type(prompt) ~= "string" then
+	if type(prompts) == "string" then
+		prompts = { prompts }
+	end
+	if type(prompts) ~= "table" then
 		return
 	end
 	local cwd = "~"
@@ -472,10 +476,15 @@ tern.on("title", function(ev: TitleEvent, cx: WindowCx)
 	end
 	-- omp has no plan-mode flag; this overlay sets plan.defaultOnStartup for the new chat only.
 	local command = 'omp --config "' .. tern.plugin.dir .. '/plan-mode.yml"'
-	-- Own tab, not a split of the board's tab, so it shows in the tab list.
-	local ok, err = pcall(cx.agents.start, cx.agents, { prompt = prompt, cwd = cwd, command = command, how = "tab" })
-	if not ok then
-		cx:toast("error", "Could not start omp", tostring(err))
+	-- Each in its own tab, not a split of the board's tab, so it shows in the tab list.
+	for _, prompt in prompts do
+		if type(prompt) == "string" then
+			local ok, err = pcall(cx.agents.start, cx.agents, { prompt = prompt, cwd = cwd, command = command, how = "tab" })
+			if not ok then
+				cx:toast("error", "Could not start omp", tostring(err))
+				return
+			end
+		end
 	end
 end)
 

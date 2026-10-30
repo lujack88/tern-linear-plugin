@@ -635,12 +635,13 @@ local function sections(entries: { StartEntry }): (string, string)
 	return table.concat(idents, ", "), table.concat(parts)
 end
 
--- The first message of one omp chat started on all of `entries`, in their order.
-function M.startPromptMany(entries: { StartEntry }): string
-	local idents, parts = sections(entries)
-	return "Start working on these " .. #entries .. " Linear issues together: " .. idents .. ".\n\n"
-		.. parts
-		.. brief(entries)
+-- The first messages of the omp chats Start opens on `entries`: one chat per issue, in their order.
+function M.startPrompts(entries: { StartEntry }): { string }
+	local prompts = {}
+	for _, e in entries do
+		table.insert(prompts, M.startPrompt(e.issue, e.title, e.stateName, e.description))
+	end
+	return prompts
 end
 
 -- "Send to chat": `entries` handed to an open chat, with the same workflow as Start.

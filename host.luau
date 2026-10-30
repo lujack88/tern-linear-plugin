@@ -780,13 +780,12 @@ local function describe(state: State, ids: { string }, name: string, doing: (wha
 	end
 end
 
--- Hands issues `ids` to the window half, which opens one omp chat on them all (Model.START_TITLE).
+-- Hands issues `ids` to the window half, which opens one omp chat per issue (Model.START_TITLE).
 local function startAgent(state: State, ids: { string })
 	describe(state, ids, "Start", function(what)
-		return "Starting " .. what .. " in omp…"
+		return "Starting " .. what .. (if #ids > 1 then " in separate omp chats…" else " in omp…")
 	end, function(entries)
-		local e = entries[1]
-		kvSet("linear-todo.start", if #entries == 1 then Model.startPrompt(e.issue, e.title, e.stateName, e.description) else Model.startPromptMany(entries))
+		kvSet("linear-todo.start", Model.startPrompts(entries))
 		state.starting = true
 		state.cx:render()
 	end)
@@ -2173,7 +2172,7 @@ local function bulkBar(state: State, n: number): Node
 			class = "lt-start",
 			text = "▷ Start",
 			aria = "Start in omp",
-			title = "Start working on the selected issues in one new omp chat",
+			title = "Start each selected issue in its own new omp chat",
 			actions = { click = "bulk-start" },
 		}))
 	end
