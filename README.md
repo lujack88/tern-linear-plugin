@@ -1,7 +1,7 @@
 # Linear Taskboard
 
 A Tern host + window plugin that shows every Issue of one Linear team as a
-Linear-style Board, as a Kanban or a List View, and writes every change straight
+Linear-style Board, as a Kanban, a List or a Tasks View, and writes every change straight
 back to Linear. The host half renders the board block and talks to Linear; the
 window half holds the commands, the keychain and the workspaces.
 
@@ -51,7 +51,7 @@ identifier (`ENG-42`), the title, its labels, the assignee's initials avatar, th
 estimate, and the State. Columns sort by priority, then by most recently updated,
 then identifier. Moving never reorders inside a column.
 
-The header holds the team key, the **Kanban | List** tabs, the **Mine** toggle
+The header holds the team key, the **Kanban | List | Tasks** tabs, the **Mine** toggle
 (only issues assigned to you), the issue count, the last sync time and the last
 error.
 
@@ -65,6 +65,8 @@ error.
   group, indented with connector lines as in Linear's List view; a parent shows
   a `done/total` sub-issue pill (Kanban cards show it too, and sub-issue cards a
   `↳ FIX-49` parent hint).
+- **Tasks**: one list of the open issues with a card beside it that shows the
+  selected issue and hands it to an omp chat (see [The Tasks View](#the-tasks-view)).
 
 Each column (Kanban) or group (List) collapses with the `▾` before its name, and
 expands with `▸`; collapsed ones keep their count, and the arrow keys skip them.
@@ -74,7 +76,8 @@ The View, the Mine toggle and the collapsed columns are remembered.
 ## Clicking an issue
 
 - **Click** a row or card, or select it with the arrow keys and press `Enter`:
-  the issue view opens.
+  the issue view opens. (In the Tasks View a click opens the card instead; see
+  below.)
 - **⋮** (at the right end of the row's or card's controls, shown on hover), or
   `m` on the keyboard-selected issue: its menu opens under it (below).
 - While an issue is lifted for a move, a click drops it instead.
@@ -141,13 +144,114 @@ open it in place of the board, laid out like Linear's issue page: a centered
 Every edit offers the usual one-step undo. Comments can be read and added here,
 not edited or deleted.
 
+## The Tasks View
+
+The **Tasks** tab shows one list of issues on the left and the selected issue's
+card beside it. On a narrow pane the card wraps below the list.
+
+### The list
+
+- **Heading**: "Issues" and "N open", counting issues in started and unstarted
+  States (Mine applies).
+- **Add an issue**: type a title and press `Enter` to create it in the team's
+  first unstarted State (assigned to you when Mine is on). It goes through the
+  same path as the New issue modal (pending row, errors, undo), and the new
+  issue opens in the card. `Esc` clears the field; `a` focuses it.
+- **Order**: issues in started States first, then unstarted, each in the board's
+  sort (priority, then most recently updated, then identifier).
+- **Backlog (N)** and **Done (N)** (completed in the last 14 days) follow as
+  groups, folded at start. Click a group's header to open or fold it (not
+  remembered). Canceled issues are not shown.
+
+### Rows
+
+A row shows the State glyph, the title, a meta line, pills and the age of the
+last update (`now`, `8m`, `3h`, `2d`, `5w`, `4mo`, `1y`; hover for the full date).
+
+- **Meta line**: the linked chat's state (see below) when the issue has one,
+  else the State name.
+- **Pills**: the priority (Urgent, High, Medium, Low, coloured), up to 2 labels
+  with their colour dot, `pane` when a chat is linked, and the identifier.
+- **Glyph**: click it to focus the linked chat; with no linked chat it marks the
+  issue done (or reopens it).
+
+On hover the age gives way to actions:
+
+| Action | What it does |
+| --- | --- |
+| ✓ Mark as done | moves the issue to Done; on a done issue it is **↺ Reopen** (back to the first unstarted State) |
+| ↓ Move to the Backlog | moves it to the Backlog; on a Backlog issue it is **↑** (back to the first unstarted State). An error shows when the team has no Backlog State |
+| ✕ Cancel | click twice (**Cancel?**) |
+| ⠿ | picks the issue up; then click an issue in the target State |
+| ⋯ | the issue menu |
+
+Every move or cancel offers the usual one-step undo.
+
+### Keys
+
+| Action | Key |
+| --- | --- |
+| Select a row and open its card | click it |
+| Open the issue view | double-click, or `Enter`; leaving it (`Esc` or back) returns here with the card open |
+| Next / previous issue (the card follows) | `↓`/`↑` or `j`/`k`, in the Tasks order: open rows, then the rows of opened groups |
+| Close the card | `Esc` |
+| Edit the card's title | `r` / `F2` |
+| Focus Add an issue | `a` |
+
+The other board keys (`x`, `m`, `c`, `Alt+C`, `Space`, `Delete` twice,
+`Ctrl+Z` / `Cmd+Z`) work as in the List View.
+
+### The card
+
+- **Top**: the identifier, **⋯** (the issue menu), **↑** / **↓** (previous or next
+  issue in the Tasks order) and **×** (close).
+- **Title**: wraps; edit it in place. It saves on `Enter`, `Tab`, `Esc` or a click
+  elsewhere.
+- An agent badge when a chat is linked, then "Updated 4m ago · Thu 05 Nov 2026,
+  13:41".
+- **Description**: Markdown, edited in place; it saves on `Tab`, `Esc` or a click
+  elsewhere, and scrolls within the card when long.
+- **Status**, **Priority**, **Assignee**, **Labels** chips: the same lists as the
+  New issue modal, with `S`, `P`, `A`, `L` while the card has the keys.
+- **Hand it to an agent**:
+  - **Model ▾**: omp's models (from `omp models --json`, loaded once per board).
+  - **Thinking**: each click cycles Default → off → auto → the model's levels →
+    Default.
+  - **Project ▾**: recent folders, the board's folder, or type a full path and
+    pick **Use <path>**.
+  - **Send to chat ▸**: the **Send to chat ▸** list.
+- **Buttons**: **Open issue** (the issue view), **Start** (or **Open pane** when a
+  chat is linked), and **Mark as done** (or **Reopen**).
+
+Edits offer the usual one-step undo. The card stays open when its issue moves to
+Done or the Backlog; it closes when the issue leaves the board (canceled, synced
+away or hidden by Mine).
+
+### Linked chats
+
+Each Start and each **Send to chat ▸** links the issue to the chat it opened or
+used (a message sent to Carly is not linked). While a board is open, the row and
+the card show the chat's state, updated every second:
+
+- **Working · 8m**: the chat is busy (the glyph spins).
+- **Needs you**: it waits for your input.
+- **Ready for you**: its turn ended.
+- **Stopped**: the chat exited.
+- **Blocked · <reason>**: the Board stopped automatic work on the issue and
+  needs you (see [CI watch](#ci-watch)).
+
+**Open pane** on the card, or a click on the row's glyph, focuses the chat; if it
+is closed a toast says "That chat is closed". When the chat's pane is gone the
+link is dropped and the row shows its State again. Closing a chat never changes
+the issue's State.
+
 ## Moving an issue
 
 - Mouse: click the grip `⠿`, then click the destination column or group.
 - Keyboard: `Space` to pick up, `←`/`→` to change State, `Enter` to drop.
 - `Shift+←` / `Shift+→` moves the focused issue to the previous or next State.
 
-The same keys work in both Views. While an issue is lifted, the States it can be
+The same keys work in the Kanban and List Views. While an issue is lifted, the States it can be
 dropped into are highlighted. `Esc` cancels the lift.
 
 A move writes that exact State to Linear immediately. While the request is in
@@ -222,8 +326,11 @@ Then four steps:
    scope, hard-to-reverse choices or where no safe default exists, and lists
    its other decisions as defaults in the plan. It decides whether a look
    check (up to 3 visual
-   variants) is needed, and shows the plan with skill://show-me. Nothing is
-   implemented until you approve; then it writes the domain-modeling docs.
+   variants) is needed, and writes the plan to `.plans/<ID>.md` with
+   skill://show-me's diagrams inside. It submits the plan to Plannotator, whose
+   review opens in a Tern browser block beside the chat: approve it, or
+   annotate it and send it back. Nothing is implemented until you approve; then
+   it writes the domain-modeling docs.
 2. **Build**: omp moves the issue(s) to In Progress, comments the plan, and
    works in its own git worktree from fresh `origin/main` on Linear's branch
    name. Implementation goes to task subagents (parallel for independent
@@ -253,6 +360,12 @@ The skills must be installed where omp finds them. Linear updates need a
 Linear tool (e.g. the Linear MCP) in that chat. The chat opens in its own tab
 and runs in the board pane's directory, else your home.
 
+**Start** on the Tasks View's card starts the same chat, plus the picked
+model (`--model`) and thinking level (`--thinking`), in the picked folder (else
+the board pane's directory, else your home). A picked folder goes to the front
+of the recent folders (up to 8). Every other Start (a row, the menu, the bulk
+bar) uses no picks.
+
 `✕` (or `Delete` pressed twice) cancels an issue: it moves to the team's
 Canceled State. The plugin never deletes issues.
 
@@ -278,6 +391,13 @@ While at least one issue is selected, a bar at the bottom shows how many and:
 
 - **Status ▾**, **Priority ▾**, **Assignee ▾**: the New issue modal's lists
   (`↑`/`↓`, `Enter`, `Esc`); the pick is written to every selected issue.
+- **Labels ▾**: the New issue modal's Labels list, with the labels every
+  selected issue has already ticked. Tick or untick as many as you like; when the
+  list closes (`Esc` or a click outside), each label you ticked is added to every
+  selected issue and each one you unticked is removed from all of them. A label
+  only some of them have stays as it is unless you tick it. Adding a label from a
+  label group replaces the issue's other label of that group. An issue with more
+  than 50 labels is left alone, with a toast.
 - **Cancel issues**: click twice (**Cancel N?**); cancels every selected issue
   and clears the selection.
 - **▷ Start** (2 or more selected): opens a separate new omp chat for each of
@@ -287,6 +407,61 @@ While at least one issue is selected, a bar at the bottom shows how many and:
 
 One undo (the undo bar or `Ctrl+Z`) reverts the whole bulk edit. The selection
 stays after a Status, Priority or Assignee change, as in Linear.
+
+## Auto-start
+
+The Board can start a chat for an issue without a click. An issue qualifies
+when it has the label `agent` (any case), sits in an unstarted State such as
+Todo, and is assigned to you. Auto-start is off by default.
+
+The header chip shows it: `Auto · off`, `Auto · 1/2` (chats busy / slots), or
+`Auto · budget` (hover shows why). A click on the chip turns it on or off, as
+does **Linear: auto-start on/off**. Slots run from 1 to 3, default 2; set them
+with **Linear: auto-start slots**. Every linked chat that has not exited counts
+against the slots. Each issue auto-starts at most once; **▷ Start** still works.
+
+The budget gate reads `omp usage`, at most every 5 minutes. No new chat starts
+while Claude's 5-hour or 7-day window is at 80% or more, or when usage can't be
+read.
+
+Auto-start runs only while a Board is open, after each sync. The chat starts
+exactly as **▷ Start** does: its own tab, plan mode, so it stops at plan
+approval and at the hard stops. It runs in the project folder: the most recent
+Start folder, else a linked chat's folder, else the board's folder.
+
+## CI watch
+
+For a linked issue whose chat is **Ready for you** or **Stopped**, the Board
+reads its PR (`gh pr view` on the issue's Linear branch) at most every 2
+minutes. While the chat is **Working** or **Needs you** it stays out.
+
+- Pending checks: it waits.
+- Failing checks, chat **Ready for you**: it sends that chat the failing check
+  names and the `gh run view <id> --log-failed` command, without switching to
+  it. Once per failing commit, at most 2 rounds per issue; then the issue shows
+  **Blocked · CI red after 2 rounds**.
+- Failing checks, chat closed: **Blocked · chat closed with red CI**.
+- Passing checks, or the PR merged or closed, clear it. A manual Start clears it
+  too.
+
+The Board never restarts a chat.
+
+## Cleaning up worktrees
+
+**Linear: clean up worktrees**, or **Clean up worktrees…** in the workspace
+menu, opens the clean-up in place of the board. It finds the repository from
+the most recent Start folder, else a linked chat's folder, else the board's
+folder, and lists every worktree as **Will remove** or **Keeping**, with the
+reason.
+
+It removes only worktrees whose PR is merged or closed, with no uncommitted
+changes, no commits missing from GitHub, and no chat still working in it. It
+never removes the main checkout, or locked or detached worktrees.
+
+**Remove N** needs two clicks. It runs `git worktree remove` without `--force`,
+then `git branch -d`, which keeps an unmerged branch. A worktree git refuses (on
+Windows, often a dev server still holding its files) stays listed with git's
+reason. `↻` or `r` checks again; `Esc` goes back. It never runs on its own.
 
 ## Commands
 
@@ -299,6 +474,9 @@ stays after a Status, Priority or Assignee change, as in Linear.
 | `Linear: poll interval` | Seconds between syncs (at least 30). |
 | `Linear: status` | Last sync result, issue count and error. |
 | `Linear: self-test` | Development check of the board model. |
+| `Linear: auto-start on/off` | Turns auto-start on or off. |
+| `Linear: auto-start slots` | How many chats auto-start may keep busy (1–3, default 2). |
+| `Linear: clean up worktrees` | Opens the worktree clean-up in place of the board. |
 
 ## Install
 

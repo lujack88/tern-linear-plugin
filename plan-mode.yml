@@ -1,7 +1,6 @@
 # omp --config overlay for chats started from the board; applies to that chat only.
-# Open in plan mode (omp has no plan-mode flag).
-plan:
-  defaultOnStartup: true
+# Plan mode comes from the Plannotator omp plugin (`omp --plan`, see Model.startCommand),
+# so omp's own plan mode stays off and the plan is reviewed in Plannotator.
 task:
   # Generic prewalk: each `task` subagent plans on its @task model, then hands off to @smol
   # at its first edit/write. Read-only agents never hand off.

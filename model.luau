@@ -1,5 +1,5 @@
 --!strict
--- Pure board model: States, columns, overlays and presentation helpers. No tern calls.
+-- Pure board model: States, columns, overlays and presentation helpers. No tern calls besides JSON decoding.
 
 local M = {}
 
@@ -321,6 +321,9 @@ M.START_TITLE = "Linear · starting an omp chat…"
 M.CHATS_TITLE = "Linear · listing chats…"
 M.SEND_TITLE = "Linear · sending to a chat…"
 
+-- The board asks the window half to focus the chat pane in kv `linear-todo.focus`.
+M.FOCUS_TITLE = "Linear · focusing a chat…"
+
 -- Create modal ----------------------------------------------------------------
 
 M.PRIORITIES = { { value = 0, label = "No priority" }, { value = 1, label = "Urgent" }, { value = 2, label = "High" }, { value = 3, label = "Medium" }, { value = 4, label = "Low" } }
@@ -537,6 +540,7 @@ local function brief(entries: { StartEntry }): string
 		branch = if one then "Linear's gitBranchName" else "the first issue's Linear gitBranchName",
 		prTitle = if one then idents[1] .. ": " .. entries[1].title else table.concat(idents, ", ") .. ": <short summary>",
 		fixes = table.concat(fixes, ", "),
+		planFile = ".plans/" .. idents[1] .. ".md",
 	}
 	return (string.gsub([==[
 ## Before you start
@@ -556,7 +560,7 @@ local function brief(entries: { StartEntry }): string
 - ultrathink and read the relevant code. Load skill://domain-modeling and keep to the repo's glossary and ADRs.
 - Ask me (ask tool, at most 5 questions) only about product scope, hard-to-reverse choices, or where no safe default exists. Decide the rest yourself and list those decisions as defaults in the plan.
 - Look check: yes when the deliverable is mainly how a page looks or feels. Then ask no taste questions; plan up to 3 variants.
-- {plan} Show it with skill://show-me. After approval, write the domain-modeling docs (ADRs, glossary).
+- {plan} Write it to `{planFile}` (only that file; never PLAN.md), with skill://show-me's shapes (call trees, component trees, Mermaid, diffs) inside it. Submit it with plannotator_submit_plan and end your turn: my decision and annotations come back as a message. Revise the same file and resubmit until I approve. After approval, write the domain-modeling docs (ADRs, glossary).
 
 ## 2. Build
 
@@ -635,13 +639,22 @@ local function sections(entries: { StartEntry }): (string, string)
 	return table.concat(idents, ", "), table.concat(parts)
 end
 
--- The first messages of the omp chats Start opens on `entries`: one chat per issue, in their order.
-function M.startPrompts(entries: { StartEntry }): { string }
-	local prompts = {}
+export type StartItem = { prompt: string, issueId: string, model: string?, thinking: string?, cwd: string? }
+
+-- The omp chats Start opens on `entries`: one chat per issue, in their order, with `opts`' picks.
+function M.startPrompts(entries: { StartEntry }, opts: { model: string?, thinking: string?, cwd: string? }?): { StartItem }
+	local o: { model: string?, thinking: string?, cwd: string? } = opts or {}
+	local items: { StartItem } = {}
 	for _, e in entries do
-		table.insert(prompts, M.startPrompt(e.issue, e.title, e.stateName, e.description))
+		table.insert(items, {
+			prompt = M.startPrompt(e.issue, e.title, e.stateName, e.description),
+			issueId = e.issue.id,
+			model = o.model,
+			thinking = o.thinking,
+			cwd = o.cwd,
+		})
 	end
-	return prompts
+	return items
 end
 
 -- "Send to chat": `entries` handed to an open chat, with the same workflow as Start.
@@ -798,6 +811,352 @@ function M.timeline(info: any): { Entry }
 		return order[a] < order[b]
 	end)
 	return out
+end
+
+-- Tasks View --------------------------------------------------------------------
+
+-- omp --thinking values
+M.THINKING = { "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto" }
+local DEFAULT_LEVELS = { "minimal", "low", "medium", "high", "xhigh", "max" }
+
+export type TaskGroups = { open: { any }, backlog: { any }, done: { any } }
+
+-- `cols` from M.columns: open = started then unstarted issues; backlog and completed apart.
+function M.taskGroups(cols: { Column }): TaskGroups
+	local g: TaskGroups = { open = {}, backlog = {}, done = {} }
+	local function add(into: { any }, stype: string)
+		for _, col in cols do
+			if col.state.type == stype then
+				table.move(col.issues, 1, #col.issues, #into + 1, into)
+			end
+		end
+	end
+	add(g.open, "started")
+	add(g.open, "unstarted")
+	add(g.backlog, "backlog")
+	add(g.done, "completed")
+	return g
+end
+
+local AGENT_KINDS = { working = "running", waiting_input = "needs", idle = "review", exited = "stopped" }
+
+function M.agentKind(state: any): string?
+	return if type(state) == "string" then AGENT_KINDS[state] else nil
+end
+
+function M.agentLine(kind: string?, seconds: number?): string?
+	if kind == "running" then
+		if not seconds or seconds < 60 then
+			return "Working"
+		end
+		local m = seconds // 60
+		return if m < 60 then "Working · " .. m .. "m" else "Working · " .. m // 60 .. "h " .. m % 60 .. "m"
+	end
+	return ({ needs = "Needs you", review = "Ready for you", stopped = "Stopped" } :: { [string]: string })[kind or ""]
+end
+
+-- Short age of a Linear ISO time; "" when not a time.
+function M.short(iso: any, now: number): string
+	local t = M.epoch(iso)
+	if not t then
+		return ""
+	end
+	local s = now - t
+	if s < 60 then
+		return "now"
+	elseif s < 3600 then
+		return s // 60 .. "m"
+	elseif s < 86400 then
+		return s // 3600 .. "h"
+	end
+	local d = s // 86400
+	if d < 7 then
+		return d .. "d"
+	elseif d < 30 then
+		return d // 7 .. "w"
+	elseif d < 365 then
+		return d // 30 .. "mo"
+	end
+	return d // 365 .. "y"
+end
+
+-- Thinking pill cycle: nil → "off" → "auto" → each level → nil; unknown restarts at "off".
+function M.nextThinking(current: string?, levels: { string }?): string?
+	if current == nil then
+		return "off"
+	end
+	local cycle = { "off", "auto" }
+	local src = if levels and #levels > 0 then levels else DEFAULT_LEVELS
+	table.move(src, 1, #src, 3, cycle)
+	local i = table.find(cycle, current)
+	return if i then cycle[i + 1] else "off"
+end
+
+function M.safeArg(s: any): boolean
+	return type(s) == "string" and #s >= 1 and #s <= 200 and string.find(s, "^[%w%._/:%-]+$") ~= nil
+end
+
+-- `--plan` starts Plannotator's plan mode (omp plugin @plannotator/pi-extension): the agent
+-- submits its plan file with plannotator_submit_plan and the review opens in a browser.
+function M.startCommand(dir: string, model: string?, thinking: string?): string
+	local cmd = 'omp --plan --config "' .. dir .. '/plan-mode.yml"'
+	if M.safeArg(model) then
+		cmd ..= " --model " .. (model :: string)
+	end
+	if thinking and table.find(M.THINKING, thinking) then
+		cmd ..= " --thinking " .. thinking
+	end
+	return cmd
+end
+
+-- Auto-start --------------------------------------------------------------------
+
+M.AUTO_LABEL = "agent"
+M.AUTO_MAX = 3
+M.AUTO_DEFAULT_MAX = 2
+M.BUDGET_LIMIT = 0.8
+M.CI_ROUNDS = 2
+
+export type AutoSettings = { on: boolean, max: number }
+
+-- kv `linear-todo.auto`; malformed fields fall back one by one to off and AUTO_DEFAULT_MAX.
+function M.autoSettings(raw: any): AutoSettings
+	local t = if type(raw) == "table" then raw else {}
+	local max = M.AUTO_DEFAULT_MAX
+	-- `m == m` drops NaN.
+	local m = t.max
+	if type(m) == "number" and m == m then
+		max = math.clamp(math.floor(m), 1, M.AUTO_MAX)
+	end
+	return { on = t.on == true, max = max }
+end
+
+function M.hasLabel(issue: any, name: string): boolean
+	local l = issue.labels
+	local want = string.lower(name)
+	for _, n in (if type(l) == "table" and type(l.nodes) == "table" then l.nodes else {}) do
+		if type(n) == "table" and type(n.name) == "string" and string.lower(n.name) == want then
+			return true
+		end
+	end
+	return false
+end
+
+-- `linked`: Issue id → its linked chat's agent state; every chat not exited holds a slot.
+function M.busySlots(linked: { [string]: string }): number
+	local n = 0
+	for _, s in linked do
+		if s ~= "exited" then
+			n += 1
+		end
+	end
+	return n
+end
+
+-- Opted-in Issues that may auto-start now, in List order (M.list).
+function M.autoCandidates(cols: { Column }, viewerId: string?, started: { [string]: any }, linked: { [string]: string }): { any }
+	local out: { any } = {}
+	if viewerId == nil then
+		return out
+	end
+	for _, col in cols do
+		if col.state.type ~= "unstarted" then
+			continue
+		end
+		for _, issue in (M.nest(col.issues)) do
+			local a = issue.assignee
+			local chat = linked[issue.id]
+			if type(a) == "table" and a.id == viewerId and M.hasLabel(issue, M.AUTO_LABEL)
+				and started[issue.id] == nil and (chat == nil or chat == "exited") then
+				table.insert(out, issue)
+			end
+		end
+	end
+	return out
+end
+
+export type Budget = { blocked: boolean, reason: string?, used: number? }
+
+local BUDGET_WINDOWS: { [string]: string } = { ["anthropic:5h"] = "Claude 5-hour window", ["anthropic:7d"] = "Claude 7-day window" }
+
+-- `omp usage --json -p anthropic`: the highest of the 5-hour and 7-day fractions against `limit`.
+function M.budget(stdout: string?, limit: number): Budget
+	local ok, data = pcall(tern.json.decode, stdout or "")
+	local used: number?, window: string? = nil, nil
+	for _, r in listOf(if ok and type(data) == "table" then data.reports else nil) do
+		for _, l in listOf(if type(r) == "table" then r.limits else nil) do
+			local name = if type(l) == "table" then BUDGET_WINDOWS[l.id] else nil
+			local a = if name then l.amount else nil
+			if type(a) ~= "table" then
+				continue
+			end
+			local f: number? = nil
+			if type(a.usedFraction) == "number" then
+				f = a.usedFraction
+			elseif type(a.used) == "number" and type(a.limit) == "number" and a.limit > 0 then
+				f = a.used / a.limit
+			end
+			if f and f == f and (used == nil or f > used) then
+				used, window = f, name
+			end
+		end
+	end
+	if used == nil then
+		return { blocked = true, reason = "usage unknown" }
+	elseif used >= limit then
+		-- The epsilon keeps 0.29 at 29%, not 28%.
+		return { blocked = true, used = used, reason = (window :: string) .. " at " .. math.floor(used * 100 + 1e-9) .. "%" }
+	end
+	return { blocked = false, used = used }
+end
+
+-- CI watch ----------------------------------------------------------------------
+
+export type Pr = { number: number, url: string, state: string, sha: string, ci: string, failed: { string }, runId: string? }
+
+local RED_RUN = { FAILURE = true, TIMED_OUT = true, CANCELLED = true, ACTION_REQUIRED = true, STARTUP_FAILURE = true }
+
+local function str(v: any): string
+	return if type(v) == "string" then v else ""
+end
+
+-- `gh pr view <branch> --json number,url,state,headRefOid,statusCheckRollup`; nil when not a PR.
+function M.prStatus(stdout: string?): Pr?
+	local ok, data = pcall(tern.json.decode, stdout or "")
+	if not ok or type(data) ~= "table" or type(data.number) ~= "number" then
+		return nil
+	end
+	local rollup = listOf(data.statusCheckRollup)
+	local pending, red = false, false
+	local failed: { string } = {}
+	local runId: string? = nil
+	for _, c in rollup do
+		if type(c) ~= "table" then
+			continue
+		end
+		local bad, name = false, ""
+		if c.__typename == "StatusContext" then
+			local s = str(c.state)
+			pending = pending or s == "PENDING" or s == "EXPECTED"
+			bad, name = s == "FAILURE" or s == "ERROR", str(c.context)
+		elseif c.status ~= "COMPLETED" then
+			pending = true
+		else
+			bad, name = RED_RUN[str(c.conclusion)] == true, str(c.name)
+			if bad and runId == nil then
+				runId = string.match(str(c.detailsUrl), "/actions/runs/(%d+)")
+			end
+		end
+		if bad then
+			red = true
+			if not table.find(failed, name) then
+				table.insert(failed, name)
+			end
+		end
+	end
+	local ci = if pending then "pending" elseif red then "red" elseif #rollup > 0 then "green" else "none"
+	return { number = data.number, url = str(data.url), state = str(data.state), sha = str(data.headRefOid), ci = ci, failed = failed, runId = runId }
+end
+
+export type CiEntry = { rounds: number, sha: string?, blocked: string? }
+export type CiStep = { action: string, entry: CiEntry?, reason: string? }
+
+-- What the CI watch does with one linked Issue's PR; `entry` is the record to store (nil deletes it).
+function M.ciStep(entry: CiEntry?, pr: Pr?, agentState: string?, maxRounds: number): CiStep
+	if pr == nil then
+		return { action = "none", entry = entry }
+	elseif pr.state == "MERGED" or pr.state == "CLOSED" or pr.ci == "green" then
+		return { action = if entry ~= nil then "clear" else "none", entry = nil }
+	elseif agentState == "working" or agentState == "waiting_input" or pr.ci ~= "red" then
+		return { action = "none", entry = entry }
+	elseif entry and entry.sha == pr.sha then
+		return { action = "none", entry = entry }
+	end
+	local rounds = if entry then entry.rounds or 0 else 0
+	if agentState == nil or agentState == "exited" then
+		local reason = "chat closed with red CI"
+		return { action = "block", reason = reason, entry = { rounds = rounds, sha = pr.sha, blocked = reason } }
+	elseif rounds < maxRounds then
+		return { action = "send", entry = { rounds = rounds + 1, sha = pr.sha } }
+	end
+	local reason = "CI red after " .. maxRounds .. " rounds"
+	return { action = "block", reason = reason, entry = { rounds = rounds, sha = pr.sha, blocked = reason } }
+end
+
+-- The message sent to an idle chat whose PR went red.
+function M.ciPrompt(identifier: string, pr: Pr, round: number, maxRounds: number): string
+	local checks = if #pr.failed > 0 then ": " .. table.concat(pr.failed, ", ") else ""
+	local how = if pr.runId then "gh run view " .. pr.runId .. " --log-failed" else "gh pr checks " .. pr.number
+	return "PR #" .. pr.number .. " for " .. identifier .. " has failing checks" .. checks
+		.. " (round " .. round .. " of " .. maxRounds .. ").\n\n"
+		.. "Run `" .. how .. "` to see why, fix it in the same worktree, push, and wait for the checks. The hard stops still apply."
+end
+
+function M.blockedLine(reason: string): string
+	return "Blocked · " .. reason
+end
+
+-- Worktree clean-up -------------------------------------------------------------
+
+export type Worktree = { path: string, head: string?, branch: string?, main: boolean, bare: boolean, detached: boolean, locked: boolean, prunable: boolean }
+
+-- `git worktree list --porcelain`: the first block is the main checkout.
+function M.worktrees(porcelain: string): { Worktree }
+	local out: { Worktree } = {}
+	local cur: Worktree? = nil
+	for line in string.gmatch(porcelain .. "\n", "([^\n]*)\n") do
+		line = string.gsub(line, "\r$", "")
+		local key, rest = string.match(line, "^(%S+) ?(.*)$")
+		if key == "worktree" then
+			cur = { path = rest :: string, main = #out == 0, bare = false, detached = false, locked = false, prunable = false }
+			table.insert(out, cur :: Worktree)
+		elseif cur then
+			if key == "HEAD" then
+				cur.head = rest
+			elseif key == "branch" then
+				cur.branch = (string.gsub(rest :: string, "^refs/heads/", ""))
+			elseif key == "bare" or key == "detached" or key == "locked" or key == "prunable" then
+				(cur :: any)[key] = true
+			end
+		end
+	end
+	return out
+end
+
+export type WorktreeFacts = { dirty: boolean?, unpushed: number?, pr: string?, busy: boolean }
+
+local PR_STATES = { MERGED = true, CLOSED = true, OPEN = true, NONE = true }
+
+-- Whether the clean-up may remove `wt`, and why; anything unknown keeps it.
+function M.cleanupVerdict(wt: Worktree, f: WorktreeFacts): (boolean, string)
+	if wt.main then
+		return false, "main checkout"
+	elseif wt.bare then
+		return false, "bare repository"
+	elseif wt.detached or not wt.branch then
+		return false, "no branch"
+	elseif wt.locked then
+		return false, "locked"
+	elseif wt.prunable then
+		return false, "folder is gone"
+	elseif f.busy then
+		return false, "a chat is still working in it"
+	elseif f.pr == nil or not PR_STATES[f.pr] then
+		return false, "PR state unknown"
+	elseif f.pr == "OPEN" then
+		return false, "PR is open"
+	elseif f.pr == "NONE" then
+		return false, "no PR"
+	elseif f.dirty == nil then
+		return false, "could not read changes"
+	elseif f.dirty then
+		return false, "uncommitted changes"
+	elseif f.unpushed == nil then
+		return false, "could not check commits"
+	elseif f.unpushed > 0 then
+		return false, f.unpushed .. (if f.unpushed == 1 then " commit" else " commits") .. " not on GitHub"
+	end
+	return true, if f.pr == "MERGED" then "PR merged" else "PR closed"
 end
 
 return M

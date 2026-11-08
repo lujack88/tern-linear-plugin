@@ -1,6 +1,6 @@
 # Sync model
 
-How version 0.8.0 keeps the Board in step with Linear.
+How version 0.9.0 keeps the Board in step with Linear.
 
 ## Host and window halves
 
@@ -25,21 +25,31 @@ title to `Model.ADD_TITLE`; the window half watches board panes' `title` events,
 answers with `{act = "ws-added"}` (the title reverts) and runs its key prompt.
 
 Starting work on an issue needs `cx.agents:start`, which is also window-only.
-**▷ Start** (card/row control or the issue view's header) loads the description
-when the issue view has not, writes the chat's first message (`Model.startPrompt`)
-to kv `linear-todo.start` and sets the title to `Model.START_TITLE`. The window
-answers with `{act = "started"}`, takes and clears the kv entry, and opens an omp
-chat on it in the board pane's cwd (else `~`). The command is
-`omp --config <plugin dir>/plan-mode.yml`: omp has no plan-mode flag, and that
-overlay sets `plan.defaultOnStartup`, `task.prewalk` and the reviewer models
-(`task.agentModelOverrides`) for this chat only. A failed description
-fetch still starts the chat; the prompt says the description could not be loaded.
+**▷ Start** (card/row control, the issue view's header or the Tasks View's card)
+loads the description when the issue view has not, writes a one-item list of
+`Model.startPrompts` items, `{prompt, issueId, model?, thinking?, cwd?}`, to kv
+`linear-todo.start` and sets the title to `Model.START_TITLE`. `prompt` is the
+chat's first message (`Model.startPrompt`). The window answers with
+`{act = "started"}`, takes and clears the kv entry, and opens an omp chat per item
+in the item's `cwd`, else the board pane's cwd, else `~`. The command is
+`Model.startCommand`: `omp --plan --config <plugin dir>/plan-mode.yml`. `--plan`
+starts the Plannotator omp plugin's plan mode (omp's own plan mode stays off), and
+the overlay sets `task.prewalk`
+and the reviewer models (`task.agentModelOverrides`) for this chat only; plus
+`--model <model>` and `--thinking <level>` when the item has them. A value that is
+not safe on a command line is left out. Only the Tasks View card sets `model`,
+`thinking` and `cwd` (its Model, Thinking and Project pills); a picked folder goes
+to the front of kv `linear-todo.folders`. A failed description fetch still starts
+the chat; the prompt says the description could not be loaded.
 The bulk bar's **▷ Start** and the selection menu's **▷ Start in omp** use the same
-path for up to 10 issues: the descriptions load in parallel, and once all have
-answered the board writes a list of `Model.startPrompts` messages, one per issue,
-and the window half opens one omp chat per message, each in its own tab, in the
-board's order. A single Start writes a one-item list; the window half also takes a
-bare string, from a board loaded before the list.
+path for up to 10 issues, without picks: the descriptions load in parallel, and
+once all have answered the board writes one item per issue, and the window half
+opens one omp chat per item, each in its own tab, in the board's order. Items not
+in this shape, from a board loaded before 0.9.0, start nothing.
+
+The card's Model pill lists omp's chat models from `omp models --json`. The host
+half runs it (`tern.process.run`) once per board, when a card first opens; each
+model brings its own Thinking levels. A failure leaves only "Default model".
 
 **Send to chat** uses the same title channel twice, because the open chats
 (`cx.agents:list`), `cx.agents:ask`, `cx:ask_carly` and `cx.layout:focus` are all
@@ -52,10 +62,30 @@ window-only:
    it (`label`) with its folder · model · state (`meta`) and Tern tile icon
    (`tile-omp`, `tile-claude`, …). Until it answers the list reads "Loading chats…".
 2. Picking a chat loads the descriptions as Start does, writes
-   `{pane, label, prompt = Model.contextPrompt(…)}` to kv `linear-todo.send` and
-   sets the title to `Model.SEND_TITLE`. The window answers `{act = "sent"}`, takes
-   and clears the kv entry, and calls `cx.agents:ask` (then focuses that pane and
-   toasts) or `cx:ask_carly`. A failed send toasts the error.
+   `{pane, label, prompt = Model.contextPrompt(…), ids}` to kv `linear-todo.send`
+   (`ids`: the picked issues' ids) and sets the title to `Model.SEND_TITLE`. The
+   window answers `{act = "sent"}`, takes and clears the kv entry, and calls
+   `cx.agents:ask` (then focuses that pane and toasts) or `cx:ask_carly`. A failed
+   send toasts the error.
+
+**Open pane** (the Tasks View card's button, or a row's glyph when its issue has
+a linked chat) needs `cx.layout:focus`. It writes the chat's pane to kv
+`linear-todo.focus` and sets the title to `Model.FOCUS_TITLE`
+("Linear · focusing a chat…"). The window answers `{act = "focused"}` (the title
+reverts), takes and clears the kv entry and focuses the pane; a pane that is gone
+toasts "That chat is closed".
+
+The window half remembers which chat each Start or Send to chat used, in kv
+`linear-todo.links` (`{[issueId] = pane}`). Only the window writes it; a send to
+Carly is not linked. A window timer runs every second and, while a board pane
+exists, pushes the linked chats to every board pane straight in the event:
+`{act = "agents", agents = {{issue, pane, state, cwd?}, …}}`, `state` being
+`working`, `waiting_input`, `idle` or `exited` (a linked pane still open but no
+longer an agent is `exited`). It sends when the list changed or 4 s passed since
+the last push, and at once after a Start or Send records a link. A link whose
+pane is gone is dropped from kv. The board shows the state on the Tasks View's
+rows and card only: a chat never changes an issue's State, so closing it just
+removes the status.
 
 The window injects again on `window_start`, 300 ms after load (a reload does not
 fire `window_start`), after adding or switching a workspace, and up to 3 s after
@@ -74,9 +104,11 @@ halves.
 | `linear-todo.setup` | The active workspace (same shape); the host half reads only this. |
 | `linear-todo.cache.<teamId>` | `{teamId, states, issues}` from the team's last sync, so a reopened or switched-to board paints before the network answers. |
 | `linear-todo.status` | `{at, ok, error?, issues}` of the last sync, for `Linear: status`. |
-| `linear-todo.view` | `"kanban"` or `"list"`. |
+| `linear-todo.view` | `"kanban"`, `"list"` or `"tasks"`. |
 | `linear-todo.mine` | `true` while the Mine toggle is on. |
-| `linear-todo.folded` | `{[stateId] = true}` for collapsed columns / List groups. |
+| `linear-todo.folded` | `{[stateId] = true}` for collapsed columns / List groups. The Tasks View's Backlog and Done groups are not stored; they start folded. |
+| `linear-todo.links` | `{[issueId] = pane}`: the chat each Start or Send to chat used; written by the window half only. |
+| `linear-todo.folders` | Recent Project folders picked on the Tasks View card, most recent first, at most 8. |
 | `linear-todo.interval` | Poll interval in seconds; 60 when unset or below 30. |
 | `linear-todo.selftest` | `"ok"` or the last self-test failure. |
 
@@ -112,7 +144,8 @@ errors on the host side are swallowed, so they never stop the poll.
 Polling runs only while a board pane exists and is armed by a repeating timer, so
 closing the board stops all traffic. Network errors, `429` and `5xx` back off
 exponentially up to 600 s; other errors surface in `Linear: status` and in the
-board's header.
+board's header. The window's `agents` push makes no request and sends nothing
+while no board pane exists.
 
 ## Creating
 

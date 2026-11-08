@@ -93,9 +93,10 @@ end
 
 -- Board blocks -----------------------------------------------------------
 
-local function boardPanes(cx: WindowCx): { number }
+-- `list`: a `cx.session:panes()` result already read.
+local function boardPanes(cx: WindowCx, list: { PaneInfo }?): { number }
 	local out: { number } = {}
-	for _, p in cx.session:panes() do
+	for _, p in list or cx.session:panes() do
 		if p.block == BLOCK then
 			table.insert(out, p.pane)
 		end
@@ -107,6 +108,88 @@ local function send(cx: WindowCx, panes: { number }, ev: { [string]: any })
 	for _, pane in panes do
 		cx.session:event(pane, ev)
 	end
+end
+
+-- kv `links`: Issue id → the pane of the omp chat started for or sent that Issue. Copied key by
+-- key: stored tables may be read-only.
+local function links(): { [string]: number }
+	local out: { [string]: number } = {}
+	local stored = kvGet(P .. "links")
+	if type(stored) == "table" then
+		for id, pane in stored do
+			if type(id) == "string" and type(pane) == "number" then
+				out[id] = pane
+			end
+		end
+	end
+	return out
+end
+
+local lastSig, lastSent = "", 0
+
+-- Sends the boards each linked Issue's chat ({issue, pane, state, cwd?}, by Issue id) when it
+-- changed, 4 s passed or `force`; drops links whose pane is gone. Kept to panes, agents and the
+-- board events as it runs in a timer (50 ms budget); callers pcall it.
+local function pushAgents(cx: WindowCx, force: boolean?)
+	local all = cx.session:panes()
+	local boards = boardPanes(cx, all)
+	if #boards == 0 then
+		return
+	end
+	local map = links()
+	local rows: { [number]: AgentBlock } = {}
+	for _, a in cx.agents:list() do
+		rows[a.pane] = a
+	end
+	local alive: { [number]: boolean } = {}
+	for _, p in all do
+		alive[p.pane] = true
+	end
+	local list: { { [string]: any } } = {}
+	local pruned = false
+	for id, pane in map do
+		local a = rows[pane]
+		if a then
+			table.insert(list, { issue = id, pane = pane, state = a.state, cwd = if type(a.cwd) == "string" and a.cwd ~= "" then a.cwd else nil })
+		elseif alive[pane] then
+			table.insert(list, { issue = id, pane = pane, state = "exited" })
+		else
+			map[id], pruned = nil, true
+		end
+	end
+	if pruned then
+		kvSet(P .. "links", map)
+	end
+	table.sort(list, function(x, y)
+		return x.issue < y.issue
+	end)
+	local parts: { string } = {}
+	for _, r in list do
+		table.insert(parts, r.issue .. ":" .. r.pane .. ":" .. tostring(r.state) .. ":" .. (r.cwd or ""))
+	end
+	local sig, now = table.concat(parts, "|"), tern.now()
+	if force or sig ~= lastSig or now - lastSent >= 4000 then
+		lastSig, lastSent = sig, now
+		send(cx, boards, { ev = "action", act = "agents", agents = tern.json.array(list) })
+	end
+end
+
+local sampling = false
+
+-- Once per window VM: every second, the linked chats' states for the boards' Tasks View. Errors
+-- are swallowed so the timer always re-arms.
+local function sample()
+	if sampling then
+		return
+	end
+	sampling = true
+	local function tick(cx: WindowCx?)
+		if cx then
+			pcall(pushAgents, cx)
+		end
+		tern.timer(1000, tick)
+	end
+	tern.timer(1000, tick)
 end
 
 -- Hands every workspace's key to every board block, so its switcher needs no round trip. The
@@ -407,8 +490,8 @@ local function chatList(cx: WindowCx): { { [string]: any } }
 	return out
 end
 
--- Puts `prompt` into chat `pane` (a pane id, or "carly") and shows it.
-local function sendTo(cx: WindowCx, pane: number | string, label: string, prompt: string)
+-- Puts `prompt` into chat `pane` (a pane id, or "carly") and shows it; false when it failed.
+local function sendTo(cx: WindowCx, pane: number | string, label: string, prompt: string, quiet: boolean?): boolean
 	local ok, err = pcall(function()
 		if pane == "carly" then
 			cx:ask_carly(prompt)
@@ -418,24 +501,31 @@ local function sendTo(cx: WindowCx, pane: number | string, label: string, prompt
 	end)
 	if not ok then
 		cx:toast("error", "Could not send to " .. label, tostring(err))
-		return
+		return false
 	end
 	-- Carly's own panel opens on ask_carly; an agent pane needs revealing.
-	if pane ~= "carly" then
+	if pane ~= "carly" and not quiet then
 		pcall(function()
 			cx.layout:focus(pane :: number)
 		end)
 		cx:toast("success", "Sent to " .. label)
 	end
+	return true
 end
 
--- The board's "Add workspace…", "Start" and "Send to chat": it sets its title to one of Model's
--- *_TITLE sentinels, the window takes that as the request and acknowledges it (the title reverts),
--- then runs the key prompt, opens an omp chat on kv `start`, lists the open chats, or sends kv
--- `send` to one of them.
+-- Stores the Issue → chat links (kv `links`) and tells the boards at once.
+local function link(cx: WindowCx, map: { [string]: number })
+	kvSet(P .. "links", map)
+	pcall(pushAgents, cx, true)
+end
+
+-- The board's "Add workspace…", "Start", "Send to chat" and a linked chat's focus: it sets its
+-- title to one of Model's *_TITLE sentinels, the window takes that as the request and
+-- acknowledges it (the title reverts), then runs the key prompt, opens an omp chat per kv
+-- `start` item, lists the open chats, sends kv `send` to one of them, or focuses kv `focus`.
 tern.on("title", function(ev: TitleEvent, cx: WindowCx)
 	local t = ev.title
-	if t ~= Model.ADD_TITLE and t ~= Model.START_TITLE and t ~= Model.CHATS_TITLE and t ~= Model.SEND_TITLE then
+	if t ~= Model.ADD_TITLE and t ~= Model.START_TITLE and t ~= Model.CHATS_TITLE and t ~= Model.SEND_TITLE and t ~= Model.FOCUS_TITLE then
 		return
 	end
 	local panes = boardPanes(cx)
@@ -454,43 +544,62 @@ tern.on("title", function(ev: TitleEvent, cx: WindowCx)
 		local s = kvGet(P .. "send")
 		kvSet(P .. "send", nil)
 		if type(s) == "table" and type(s.prompt) == "string" and (type(s.pane) == "number" or s.pane == "carly") then
-			sendTo(cx, s.pane, tostring(s.label), s.prompt)
+			if sendTo(cx, s.pane, tostring(s.label), s.prompt, s.quiet == true) and type(s.pane) == "number" and type(s.ids) == "table" then
+				local map = links()
+				for _, id in s.ids do
+					if type(id) == "string" then
+						map[id] = s.pane
+					end
+				end
+				link(cx, map)
+			end
+		end
+		return
+	elseif t == Model.FOCUS_TITLE then
+		send(cx, panes, { ev = "action", act = "focused" })
+		local pane = kvGet(P .. "focus")
+		kvSet(P .. "focus", nil)
+		if type(pane) == "number" and not pcall(cx.layout.focus, cx.layout, pane) then
+			cx:toast("error", "That chat is closed")
 		end
 		return
 	end
 	send(cx, panes, { ev = "action", act = "started" })
-	-- One prompt per issue (a lone string from a board loaded before the list).
-	local prompts = kvGet(P .. "start")
+	local items = kvGet(P .. "start")
 	kvSet(P .. "start", nil)
-	if type(prompts) == "string" then
-		prompts = { prompts }
-	end
-	if type(prompts) ~= "table" then
+	if type(items) ~= "table" then
 		return
 	end
-	local cwd = "~"
+	local boardCwd = "~"
 	for _, p in cx.session:panes() do
 		if p.pane == ev.pane and p.cwd and p.cwd ~= "" then
-			cwd = p.cwd
+			boardCwd = p.cwd
 		end
 	end
-	-- omp has no plan-mode flag; this overlay sets plan.defaultOnStartup for the new chat only.
-	local command = 'omp --config "' .. tern.plugin.dir .. '/plan-mode.yml"'
+	local map = links()
+	local started = false
 	-- Each in its own tab, not a split of the board's tab, so it shows in the tab list.
-	for _, prompt in prompts do
-		if type(prompt) == "string" then
-			local ok, err = pcall(cx.agents.start, cx.agents, { prompt = prompt, cwd = cwd, command = command, how = "tab" })
+	for _, item in items do
+		if type(item) == "table" and type(item.prompt) == "string" and type(item.issueId) == "string" then
+			local cwd = if type(item.cwd) == "string" and item.cwd ~= "" then item.cwd else boardCwd
+			local command = Model.startCommand(tern.plugin.dir, item.model, item.thinking)
+			local ok, pane = pcall(cx.agents.start, cx.agents, { prompt = item.prompt, cwd = cwd, command = command, how = "tab" })
 			if not ok then
-				cx:toast("error", "Could not start omp", tostring(err))
-				return
+				cx:toast("error", "Could not start omp", tostring(pane))
+				break
 			end
+			map[item.issueId], started = pane, true
 		end
+	end
+	if started then
+		link(cx, map)
 	end
 end)
 
 local function start(cx: WindowCx)
 	upgrade(cx)
 	inject(cx)
+	sample()
 end
 
 tern.on("window_start", start)
@@ -517,6 +626,46 @@ local function changeInterval(cx: WindowCx)
 		kvSet(P .. "interval", n)
 		cx:toast("success", "Linear sync every " .. n .. " s")
 	end)
+end
+
+local function slotsText(n: number): string
+	return n .. (if n == 1 then " slot" else " slots")
+end
+
+local function toggleAuto(cx: WindowCx)
+	local a = Model.autoSettings(kvGet(P .. "auto"))
+	a.on = not a.on
+	kvSet(P .. "auto", { on = a.on, max = a.max })
+	cx:toast("success", if a.on then "Auto-start on · " .. slotsText(a.max) else "Auto-start off")
+	send(cx, boardPanes(cx), { ev = "action", act = "auto-changed" })
+end
+
+local function changeSlots(cx: WindowCx)
+	local a = Model.autoSettings(kvGet(P .. "auto"))
+	local hint = "Chats auto-start may run at once (1–" .. Model.AUTO_MAX .. ")"
+	ask(cx:prompt({ value = tostring(a.max), placeholder = hint, icon = "clock" }), function(input, cx)
+		if type(input) ~= "string" then
+			return
+		end
+		local n = tonumber(trim(input))
+		if not n or n ~= math.floor(n) or n < 1 or n > Model.AUTO_MAX then
+			cx:toast("error", "Slots must be 1–" .. Model.AUTO_MAX)
+			return
+		end
+		kvSet(P .. "auto", { on = a.on, max = n })
+		cx:toast("success", "Auto-start " .. slotsText(n))
+		send(cx, boardPanes(cx), { ev = "action", act = "auto-changed" })
+	end)
+end
+
+local function cleanup(cx: WindowCx)
+	local panes = boardPanes(cx)
+	if #panes == 0 then
+		cx:toast("info", "Open the board first: Linear: open board")
+		return
+	end
+	cx.session:event(panes[1], { ev = "action", act = "cleanup" })
+	pcall(cx.layout.focus, cx.layout, panes[1])
 end
 
 local function openBoard(cx: WindowCx)
@@ -588,3 +737,6 @@ tern.command({ id = "switch", title = "Linear: switch workspace", group = GROUP,
 tern.command({ id = "interval", title = "Linear: poll interval", group = GROUP, icon = ICON, run = changeInterval })
 tern.command({ id = "status", title = "Linear: status", group = GROUP, icon = ICON, run = status })
 tern.command({ id = "selftest", title = "Linear: self-test", group = GROUP, icon = ICON, run = selftest })
+tern.command({ id = "auto", title = "Linear: auto-start on/off", group = GROUP, icon = ICON, run = toggleAuto })
+tern.command({ id = "slots", title = "Linear: auto-start slots", group = GROUP, icon = ICON, run = changeSlots })
+tern.command({ id = "cleanup", title = "Linear: clean up worktrees", group = GROUP, icon = ICON, run = cleanup })
