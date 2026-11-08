@@ -2,7 +2,7 @@
 
 Notable changes to the Linear Taskboard (`linear-todo`) Tern plugin, newest first.
 
-## 0.9.0 — 2026-11-08
+## 0.9.0 — 2026-11-08 (#6)
 
 ### Added
 
