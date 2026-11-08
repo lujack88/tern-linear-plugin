@@ -8,6 +8,27 @@ window half holds the commands, the keychain and the workspaces.
 Open it with **Linear: open board**. The board lives in its own pane and stays in
 step with Linear while that pane exists.
 
+## What's new
+
+**0.9.0** (2026-11-08, [#6](https://github.com/lujack88/tern-linear-plugin/pull/6)):
+
+- [The Tasks View](#the-tasks-view): one list of open issues with the selected
+  issue's card beside it, where you edit the issue and Start it with a model,
+  thinking level and project folder.
+- [Linked chats](#linked-chats): rows and cards show their chat's state
+  (Working, Needs you, Ready for you, Stopped, Blocked), and **Open pane** jumps
+  to it.
+- [Auto-start](#auto-start), [CI watch](#ci-watch) and
+  [Cleaning up worktrees](#cleaning-up-worktrees).
+- **Labels ▾** in the selection bar for many issues at once.
+- Plans are reviewed in Plannotator (`omp --plan`), bulk Start opens one chat
+  per issue, and the ticket brief is shorter.
+
+Earlier: **0.8.0** (Start several issues, Send to chat, nested sub-issues, an
+issue view laid out like Linear's), **0.7.0** (Start in omp, AI description
+rewrite, multi-select) and **0.4.0** (first release). Every change is in
+[CHANGELOG.md](CHANGELOG.md).
+
 ## Workspaces
 
 A workspace is one Linear workspace (organization), its API key, and the team its
