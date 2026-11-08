@@ -13,7 +13,7 @@ local M = {}
 local MODAL = "layer.create"
 local SEARCH = "layer.pop.q"
 
-export type Kind = "status" | "priority" | "assignee" | "labels" | "estimate" | "project" | "cycle" | "due" | "template"
+export type Kind = "status" | "priority" | "assignee" | "labels" | "estimate" | "project" | "cycle" | "due" | "template" | "model" | "folder"
 export type Option = { id: string, label: string, on: boolean?, hint: string?, icon: string? }
 export type Pop = { kind: Kind, q: Field.Field, cursor: number }
 export type Draft = {
@@ -41,13 +41,26 @@ export type Draft = {
 	pop: Pop?,
 	more: boolean,
 	error: string?,
+	-- The Tasks card's agent choices: omp model selector, thinking level, working folder.
+	model: string?,
+	thinking: string?,
+	cwd: string?,
 	-- A rewrite is running; the description before the last rewrite, and the text it produced.
 	rewriting: boolean,
 	beforeRewrite: string?,
 	rewritten: string?,
 }
--- What the modal needs from the board: the team's States, the fetched choices, the Setup.
-export type Ctx = { states: { any }, meta: any?, teamKey: string, teamId: string, viewerId: string? }
+-- What the modal needs from the board: the team's States, the fetched choices, the Setup; the
+-- Tasks card adds omp's models and the recent folders.
+export type Ctx = {
+	states: { any },
+	meta: any?,
+	teamKey: string,
+	teamId: string,
+	viewerId: string?,
+	models: { { id: string, label: string, hint: string?, thinking: { string }? } }?,
+	folders: { string }?,
+}
 
 local function el(tag: string, role: string, key: string, props: { [string]: any }?, children: { Node }?): Node
 	local p: { [string]: any } = props or {}
@@ -125,6 +138,15 @@ end
 
 local function today(): any
 	return os.date("*t")
+end
+
+-- The last segment of a folder path ("C:\a\proj\" → "proj").
+function M.folderName(path: string): string
+	return string.match(path, "([^\\/]+)[\\/]*$") or path
+end
+
+local function modelOf(c: Ctx, id: string?): any
+	return if id then byId(c.models, id) else nil
 end
 
 -- Options ---------------------------------------------------------------------
@@ -226,6 +248,21 @@ local function options(d: Draft, c: Ctx): { Option }
 				add(tp.id, tp.name, tp.id == d.templateId, if type(team) == "table" then c.teamKey else "Workspace")
 			end
 		end
+	elseif kind == "model" then
+		add("", "Default model", d.model == nil)
+		local models: { any } = c.models or {}
+		for _, m in models do
+			add(m.id, m.label, m.id == d.model, m.hint)
+		end
+	elseif kind == "folder" then
+		local q = (d.pop :: Pop).q.text
+		if string.find(q, "^%a:[\\/]") or string.find(q, "^/") or string.find(q, "^~") then
+			add(q, "Use " .. q, q == d.cwd)
+		end
+		local folders: { string } = c.folders or {}
+		for _, path in folders do
+			add(path, M.folderName(path), path == d.cwd, path)
+		end
 	end
 	local q = (d.pop :: Pop).q.text
 	if q == "" then
@@ -319,6 +356,16 @@ function M.choose(d: Draft, id: string, c: Ctx, cx: BlockCx)
 				applyTemplate(d, tp)
 			end
 		end
+	elseif kind == "model" then
+		d.model = if id == "" then nil else id
+		local m = modelOf(c, d.model)
+		local levels: { string } = if m and type(m.thinking) == "table" then m.thinking else {}
+		-- "off" and "auto" suit every model; an unknown model's levels are unknown, so keep the pick.
+		if d.thinking and d.thinking ~= "off" and d.thinking ~= "auto" and #levels > 0 and not table.find(levels, d.thinking) then
+			d.thinking = nil
+		end
+	elseif kind == "folder" then
+		d.cwd = id
 	end
 	M.closePop(d, cx)
 end
@@ -553,14 +600,16 @@ local PLACEHOLDER: { [Kind]: string } = {
 	status = "Change status…", priority = "Set priority…", assignee = "Assign to…", labels = "Add labels…",
 	estimate = "Set estimate…", project = "Add to project…", cycle = "Add to cycle…",
 	due = "YYYY-MM-DD or pick below", template = "Use a template…",
+	model = "Choose a model…", folder = "Folder path or pick below",
 }
 
 -- `at` anchors it to that node instead of its chip; `lead` goes above the search field (a Back row).
 function M.popover(d: Draft, c: Ctx, at: string?, lead: Node?): Node
 	local pop = d.pop :: Pop
 	local rows: { Node } = {}
-	-- Status, priority and due date need nothing fetched.
-	local waiting = not c.meta and pop.kind ~= "status" and pop.kind ~= "priority" and pop.kind ~= "due"
+	-- Status, priority, due date and the card's model/folder need nothing fetched.
+	local kind = pop.kind
+	local waiting = not c.meta and kind ~= "status" and kind ~= "priority" and kind ~= "due" and kind ~= "model" and kind ~= "folder"
 	if waiting then
 		table.insert(rows, el("div", "pop-none", "loading", { class = "lt-pop-none", text = "Loading…" }))
 	else
@@ -586,7 +635,7 @@ function M.popover(d: Draft, c: Ctx, at: string?, lead: Node?): Node
 			}, kids))
 		end
 		if #rows == 0 then
-			table.insert(rows, el("div", "pop-none", "none", { class = "lt-pop-none", text = "No matches" }))
+			table.insert(rows, el("div", "pop-none", "none", { class = "lt-pop-none", text = if kind == "folder" then "Type a full folder path" else "No matches" }))
 		end
 	end
 	local kids: { Node } = {

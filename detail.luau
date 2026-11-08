@@ -16,6 +16,8 @@ local M = {}
 local ROOT = "main.detail.left"
 local ANCHOR = "main.detail.side.props"
 local COMMENT = ROOT .. ".compose.comment"
+-- The Tasks View's card: its title/description fields, "props" chips and "agent" pills.
+local CARD = "main.tasks.card"
 
 export type Detail = {
 	id: string,
@@ -33,12 +35,16 @@ export type Detail = {
 	subsOpen: boolean,
 	-- What the last "copy" or "open" intent names: "link" / "id" / "branch", or an issue id.
 	target: string?,
+	-- Shown as the Tasks View's card; `live`: its last render had a linked chat alive.
+	card: boolean?,
+	live: boolean?,
 }
 
 -- What the host should do after a key, click or event: "close", "title" / "desc" (save that
 -- field), "comment" (post it), "next" / "prev" (open the neighbouring issue), "start", "split"
 -- (the Start dropdown), "more" (the issue menu), "copy" / "open" (of `target`), "subissue"
--- (the New issue modal for a sub-issue) or "undo".
+-- (the New issue modal for a sub-issue) or "undo"; from the card also "pane" (focus the linked
+-- chat), "done" (complete or reopen), "full" (the full issue view) and "chats" (Send to chat).
 export type Intent = string
 
 local function el(tag: string, role: string, key: string, props: { [string]: any }?, children: { Node }?): Node
@@ -123,12 +129,12 @@ end
 
 -- Lifecycle -----------------------------------------------------------------------
 
-function M.new(issue: any, stateId: string, title: string): Detail
+function M.new(issue: any, stateId: string, title: string, card: boolean?): Detail
 	local d = Create.new(stateId, nil)
-	d.root, d.anchor, d.focus = ROOT, ANCHOR, nil
+	d.root, d.anchor, d.focus = if card then CARD else ROOT, if card then CARD .. ".props" else ANCHOR, nil
 	fromIssue(d, issue, stateId)
 	Field.reset(d.title, title)
-	return { id = issue.id, d = d, comment = Field.new("", true, 20000), commenting = false, sending = false, subsOpen = true }
+	return { id = issue.id, d = d, comment = Field.new("", true, 20000), commenting = false, sending = false, subsOpen = true, card = card }
 end
 
 -- Takes Linear's values into every field the caret is not in. `idle`: no write to this issue
@@ -181,8 +187,17 @@ function M.key(dt: Detail, k: Key, c: Create.Ctx, cx: BlockCx): Intent | boolean
 	end
 	local focus = d.focus
 	if focus then
-		-- Tab steps on (title → description → comment); Enter in the title and Esc also save.
-		if name == "tab" and not k.shift then
+		-- Tab steps on (title → description → comment; the card cycles title ↔ description); Enter
+		-- in the title and Esc also save.
+		if dt.card and name == "tab" then
+			-- The card's description takes no caret before it has loaded.
+			if focus == "title" and not dt.info then
+				blur(dt, cx)
+			else
+				Create.focus(d, if focus == "title" then "desc" else "title", cx)
+			end
+			return focus
+		elseif name == "tab" and not k.shift then
 			if focus == "title" then
 				Create.focus(d, "desc", cx)
 			else
@@ -213,12 +228,13 @@ function M.key(dt: Detail, k: Key, c: Create.Ctx, cx: BlockCx): Intent | boolean
 		return "next"
 	elseif name == "k" then
 		return "prev"
-	elseif name == "enter" then
+	elseif name == "enter" and not dt.card then
 		Create.focus(d, "title", cx)
 		return true
 	end
 	local kind = Create.shortcut(k, false)
-	if kind then
+	-- The card shows only these chips; another list would have nothing to hang under.
+	if kind and (not dt.card or kind == "status" or kind == "priority" or kind == "assignee" or kind == "labels") then
 		Create.openPop(d, kind :: Create.Kind, cx)
 		return true
 	end
@@ -263,7 +279,24 @@ local INTENTS: { [string]: Intent } = {
 	["dt-next"] = "next",
 	["dt-prev"] = "prev",
 	["dt-sub"] = "subissue",
+	["dt-close"] = "close",
+	["dt-up"] = "prev",
+	["dt-down"] = "next",
+	["dt-done"] = "done",
+	["dt-full"] = "full",
+	["dt-chats"] = "chats",
 }
+
+-- The card's chosen model in `c.models`, if listed.
+local function chosenModel(d: Create.Draft, c: Create.Ctx): any
+	local models: { any } = c.models or {}
+	for _, m in models do
+		if m.id == d.model then
+			return m
+		end
+	end
+	return nil
+end
 
 -- A click in the view: an intent, or whether it was the view's.
 function M.act(dt: Detail, name: string, value: string, c: Create.Ctx, cx: BlockCx): Intent | boolean
@@ -273,6 +306,12 @@ function M.act(dt: Detail, name: string, value: string, c: Create.Ctx, cx: Block
 	elseif name == "dt-copy" or name == "dt-open" then
 		dt.target = value
 		return if name == "dt-copy" then "copy" else "open"
+	elseif name == "dt-primary" then
+		return if dt.live then "pane" else "start"
+	elseif name == "dt-think" then
+		local m = chosenModel(dt.d, c)
+		dt.d.thinking = Model.nextThinking(dt.d.thinking, if m then m.thinking else nil)
+		return true
 	elseif name == "dt-subs" then
 		dt.subsOpen = not dt.subsOpen
 		return true
@@ -472,6 +511,17 @@ local function heading(key: string, text: string): Node
 	return el("div", "dt-heading", key, { class = "lt-dt-heading", text = text })
 end
 
+-- The title and description editors, shared by the full view and the card; `f` nil shows
+-- the description idle (not editable). `class` set: the card's title, an editor so a long title
+-- wraps; its Field stays single-line, so Enter saves and pasted or typed line breaks become spaces.
+local function titleField(d: Create.Draft, class: string?): Node
+	return Field.node(if class then "editor" else "input", { key = "title", role = ROLE .. "dt-title", class = class, placeholder = "Issue title" }, d.title, "", d.root .. ".title")
+end
+
+local function descField(d: Create.Draft, f: Field.Field?, class: string?, placeholder: string?): Node
+	return Field.node("editor", { key = "desc", role = ROLE .. "dt-desc", class = class, placeholder = placeholder or "Add description…" }, f, "", d.root .. ".desc")
+end
+
 -- The main region's children for the open issue: `pos` of `total` is its place in the board's
 -- order (0 when it is not shown there); `open` the header menu showing, "more" or "split".
 function M.view(dt: Detail, issue: any, c: Create.Ctx, pos: number, total: number, open: string?): { Node }
@@ -517,10 +567,10 @@ function M.view(dt: Detail, issue: any, c: Create.Ctx, pos: number, total: numbe
 	end
 
 	local left: { Node } = {
-		Field.node("input", { key = "title", role = ROLE .. "dt-title", placeholder = "Issue title" }, d.title, "", ROOT .. ".title"),
+		titleField(d),
 	}
 	if d.focus == "desc" then
-		table.insert(left, Field.node("editor", { key = "desc", role = ROLE .. "dt-desc", placeholder = "Add description…" }, d.desc, "", ROOT .. ".desc"))
+		table.insert(left, descField(d, d.desc))
 	elseif not info then
 		table.insert(left, el("div", "dt-desc-view", "desc-view", { class = "lt-dt-desc lt-dt-muted", text = "Loading…" }))
 	else
@@ -580,6 +630,88 @@ function M.view(dt: Detail, issue: any, c: Create.Ctx, pos: number, total: numbe
 		el("div", "dt-side", "side", { class = "lt-dt-side" }, side),
 	}))
 	return out
+end
+
+export type CardInfo = { agent: { kind: string?, line: string? }?, live: boolean, pos: number, total: number, menu: boolean }
+
+local function cardIcon(key: string, text: string, label: string, action: string, attrs: { [string]: any }?): Node
+	return el("button", "tc-icon", key, { class = "lt-tc-icon", text = text, aria = label, title = label, attrs = attrs, actions = { click = action } })
+end
+
+local function pill(key: string, text: string, label: string, action: string, attrs: { [string]: any }): Node
+	attrs["data-icon"] = key
+	return el("button", "tc-pill", key, { class = "lt-tc-pill", text = text, title = label, aria = label, attrs = attrs, actions = { click = action } })
+end
+
+-- The Tasks View's card for the open issue, beside the list: `info` from the host.
+function M.card(dt: Detail, issue: any, c: Create.Ctx, info: CardInfo): Node
+	local d = dt.d
+	dt.live = info.live
+	local popKind = if d.pop then d.pop.kind else nil
+	local first = info.pos <= 1
+	local last = info.pos == 0 or info.pos >= info.total
+	local kids: { Node } = {
+		el("div", "tc-head", "head", { class = "lt-tc-head" }, {
+			el("span", "tc-ident", "ident", { class = "lt-tc-ident", text = str(issue.identifier) or "" }),
+			el("span", "tc-spacer", "sp", { class = "lt-tc-spacer" }),
+			cardIcon("more", "⋯", "More actions", "dt-more", { ["data-open"] = flag(info.menu) }),
+			cardIcon("up", "↑", "Previous issue (K)", "dt-up", { ["data-dir"] = "up", ["data-edge"] = flag(first) }),
+			cardIcon("down", "↓", "Next issue (J)", "dt-down", { ["data-dir"] = "down", ["data-edge"] = flag(last) }),
+			cardIcon("close", "×", "Close (Esc)", "dt-close"),
+		}),
+		titleField(d, "lt-tc-title"),
+	}
+	if info.agent then
+		table.insert(kids, el("div", "tc-badges", "badges", { class = "lt-tc-badges" }, {
+			el("span", "tc-badge", "agent", { class = "lt-tc-badge", attrs = { ["data-kind"] = info.agent.kind }, text = info.agent.line or "" }),
+		}))
+	end
+	local at = Model.epoch(issue.updatedAt)
+	table.insert(kids, el("div", "tc-stamp", "stamp", {
+		class = "lt-tc-stamp",
+		text = if at then "Updated " .. Model.ago(issue.updatedAt, os.time()) .. " · " .. tostring(os.date("%a %d %b %Y, %H:%M", at)) else "",
+	}))
+	table.insert(kids, if dt.info then descField(d, d.desc, "lt-tc-desc") else descField(d, nil, "lt-tc-desc", if dt.error then "Could not load the description" else "Loading…"))
+
+	local chips: { Node } = {}
+	for _, kind in { "status", "priority", "assignee", "labels" } do
+		table.insert(chips, Create.chip(d, kind :: Create.Kind, c))
+	end
+	table.insert(kids, el("div", "tc-props", "props", { class = "lt-tc-props" }, chips))
+
+	local m = if d.model then chosenModel(d, c) else nil
+	local model = if m then m.label elseif d.model then d.model else "Default model"
+	table.insert(kids, el("div", "tc-agent", "agent", { class = "lt-tc-agent" }, {
+		el("span", "tc-label", "label", { class = "lt-tc-label", text = "Hand it to an agent" }),
+		pill("model", model, "Model", "cm-pop=model", { ["data-set"] = flag(d.model ~= nil), ["data-open"] = flag(popKind == "model") }),
+		pill("thinking", d.thinking or "Default", "Thinking level (click to change)", "dt-think", { ["data-set"] = flag(d.thinking ~= nil), ["data-level"] = d.thinking or "default" }),
+		pill("folder", if d.cwd then Create.folderName(d.cwd) else "No project", d.cwd or "Folder the chat starts in", "cm-pop=folder", { ["data-set"] = flag(d.cwd ~= nil), ["data-open"] = flag(popKind == "folder") }),
+		pill("chat", "Send to chat", "Send to an open chat", "dt-chats", {}),
+	}))
+
+	local s = Model.stateById(c.states, d.stateId)
+	local done = s ~= nil and s.type == "completed"
+	table.insert(kids, el("div", "tc-buttons", "buttons", { class = "lt-tc-buttons" }, {
+		el("button", "tc-btn", "full", { class = "lt-tc-btn", text = "Open issue", actions = { click = "dt-full" } }),
+		el("button", "tc-btn", "primary", {
+			class = "lt-tc-btn",
+			text = if info.live then "Open pane" else "Start",
+			title = if info.live then "Focus the chat working on this issue" else "Start working on this issue in a new omp chat",
+			attrs = { ["data-primary"] = "true" },
+			actions = { click = "dt-primary" },
+		}),
+		el("button", "tc-btn", "done", { class = "lt-tc-btn", text = if done then "Reopen" else "Mark as done", actions = { click = "dt-done" } }),
+	}))
+	return el("div", "tc-card", "card", { class = "lt-t-card" }, kids)
+end
+
+-- Where the card's model/folder list hangs: under its pill (the chips' lists use `d.anchor`).
+function M.popAt(dt: Detail): string?
+	local pop = dt.d.pop
+	if dt.card and pop and (pop.kind == "model" or pop.kind == "folder") then
+		return CARD .. ".agent." .. pop.kind
+	end
+	return nil
 end
 
 return M

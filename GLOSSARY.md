@@ -17,9 +17,17 @@ The pane showing the active Workspace's team: its visible States and their Issue
 _Avoid_: Taskboard (for the pane)
 
 **View**:
-How the Board is drawn: Kanban (a column per State) or List (a group of rows per State).
+How the Board is drawn: Kanban (a column per State), List (a group of rows per State) or Tasks (one list of Issues, Backlog and Done folded below, with the selected Issue's card beside it). "Tasks" names this View only; its Issues are still Issues.
 _Avoid_: Mode, layout, tab
 
 **Workspace**:
 A Linear workspace (organization) added to the plugin, with its API key and the one team its Board shows; one Workspace is active at a time.
 _Avoid_: Setup, account, connection, organization (in the UI)
+
+**Auto-start**:
+The Board starting a chat for an Issue without a click.
+_Avoid_: pickup, queue
+
+**Blocked**:
+A linked chat's state when the Board stopped automatic work on its Issue and needs you.
+_Avoid_: failed, stuck

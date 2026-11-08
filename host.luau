@@ -9,6 +9,7 @@ local Model = require("./model")
 local Field = require("./field")
 local Create = require("./create")
 local Detail = require("./detail")
+local Cleanup = require("./cleanup")
 
 local ui = tern.ui
 local ROLE = "linear-todo."
@@ -17,12 +18,12 @@ local PRIO_NAME = { [0] = "No priority", "Urgent", "High", "Medium", "Low" }
 
 type Overlay = Model.Overlay
 type Column = Model.Column
-type ViewName = "kanban" | "list"
+type ViewName = "kanban" | "list" | "tasks"
 type Edit = { stateId: string, issueId: string, field: Field.Field }
 type Undo = { label: string, at: number, revert: () -> () }
--- A Status/Priority/Assignee list over `ids` (the create modal's popover on a Draft of its own),
--- and the values it opened with, so a pick is told apart from Esc.
-type Choice = { d: Create.Draft, ids: { string }, stateId: string, priority: number, assigneeId: string? }
+-- A Status/Priority/Assignee/Labels list over `ids` (the create modal's popover on a Draft of its own),
+-- and the values it opened with, so a pick is told apart from Esc (`labelIds`: the labels every issue has).
+type Choice = { d: Create.Draft, ids: { string }, stateId: string, priority: number, assigneeId: string?, labelIds: { string } }
 -- The context menu of issue `id`, acting on `ids`; `cursor` is the highlighted entry, `armed` the
 -- first click on Cancel, `choice` the Status/Priority/Assignee list drilled into, `chats` the
 -- "Send to chat" list drilled into; `anchor` the node it hangs under when not the issue's row or card;
@@ -31,6 +32,9 @@ type Menu = { id: string, ids: { string }, cursor: number, armed: boolean, choic
 -- A "Send to chat" target from the window half: an agent's pane id or "carly", its title (as the
 -- tab list names it), a muted meta line, its Tern icon name and agent state.
 type Chat = { pane: any, label: string, meta: string?, icon: string?, state: string? }
+-- An omp chat linked to an issue (from the window half): its pane, agent state, and since when (epoch
+-- seconds) it has been in that state.
+type Agent = { pane: number, state: string, since: number, cwd: string? }
 type State = {
 	cx: BlockCx,
 	-- Bumped when the team changes or the key is withdrawn: callbacks of an older gen are dropped.
@@ -76,7 +80,8 @@ type State = {
 	chats: { Chat }?,
 	-- A chat was picked: the title asks the window half to send kv `linear-todo.send`.
 	sending: boolean,
-	-- The issue opened from the board (Linear's issue view), drawn instead of the board.
+	-- The issue opened from the board: Linear's issue view drawn instead of the board, or (dt.card)
+	-- the Tasks View's card beside the list.
 	detail: Detail.Detail?,
 	view: ViewName,
 	mine: boolean,
@@ -89,6 +94,28 @@ type State = {
 	bulk: Choice?,
 	-- The context menu a click on an issue opens.
 	menu: Menu?,
+	-- Tasks View: the linked chat of each issue by id, the inline add field and whether it has the
+	-- caret, which of the Backlog/Done groups are unfolded, and omp's chat models (nil until loaded).
+	agents: { [string]: Agent },
+	add: Field.Field,
+	addFocus: boolean,
+	groupsOpen: { backlog: boolean, done: boolean },
+	models: { any }?,
+	modelsLoading: boolean,
+	-- A chat pane to focus was put in kv `linear-todo.focus`: the title asks the window half (Model.FOCUS_TITLE).
+	focusing: boolean,
+	-- The worktree clean-up, drawn in place of the board while open.
+	cleanup: Cleanup.Cleanup?,
+	-- The window half reported the linked chats at least once (slots are unknown before).
+	agentsSeen: boolean,
+	-- The last budget check (`omp usage`), and whether one runs now.
+	budget: { at: number, blocked: boolean, reason: string? }?,
+	budgetLoading: boolean,
+	-- When the last auto-start was handed over (epoch seconds).
+	autoAt: number?,
+	-- The CI watch: the last PR read per Issue id, and kv `linear-todo.ci`.
+	ciAt: { [string]: number },
+	ci: { [string]: Model.CiEntry },
 }
 
 local function nowSec(): number
@@ -218,6 +245,92 @@ local function visible(cols: { Column }, id: string?): boolean
 	return false
 end
 
+-- The first State of type `stype` in board order (Linear's position), or nil.
+local function firstState(state: State, stype: string): string?
+	for _, s in Model.visibleStates(state.states) do
+		if s.type == stype then
+			return s.id
+		end
+	end
+	return nil
+end
+
+-- The Tasks View's rows top to bottom: the open issues, then Backlog and Done while unfolded.
+local function taskOrder(state: State): { any }
+	local g = Model.taskGroups(columnsOf(state))
+	local out = table.clone(g.open)
+	if state.groupsOpen.backlog then
+		table.move(g.backlog, 1, #g.backlog, #out + 1, out)
+	end
+	if state.groupsOpen.done then
+		table.move(g.done, 1, #g.done, #out + 1, out)
+	end
+	return out
+end
+
+-- The project folders, most likely first: recent Start folders, the linked chats' folders, the board's own.
+local function projectFolders(state: State): { string }
+	local out: { string } = {}
+	local function add(f: any)
+		if type(f) == "string" and f ~= "" and not table.find(out, f) then
+			table.insert(out, f)
+		end
+	end
+	local saved = kvGet("linear-todo.folders")
+	for _, f in (if type(saved) == "table" then saved else {}) do
+		add(f)
+	end
+	for _, a in state.agents do
+		add(a.cwd)
+	end
+	add(state.cx.cwd)
+	return out
+end
+
+-- Issue id → its linked chat's agent state.
+local function linkedStates(state: State): { [string]: string }
+	local out: { [string]: string } = {}
+	for id, a in state.agents do
+		out[id] = a.state
+	end
+	return out
+end
+
+-- Stores Issue `id`'s CI record (nil deletes it) in memory and kv.
+local function setCi(state: State, id: string, entry: Model.CiEntry?)
+	state.ci[id] = entry :: any
+	kvSet("linear-todo.ci", state.ci)
+end
+
+local function cleanupHost(state: State): Cleanup.Host
+	local pane = state.cx.pane
+	return {
+		render = function()
+			if alive(pane) then
+				state.cx:render()
+			end
+		end,
+		toast = function(kind: string, title: string, body: string?)
+			state.cx:toast(kind :: any, title, body)
+		end,
+		busy = function(branch: string): boolean
+			for id, a in state.agents do
+				local issue = if a.state == "working" or a.state == "waiting_input" then find(state, id) else nil
+				if issue and issue.branchName == branch then
+					return true
+				end
+			end
+			return false
+		end,
+		alive = function(): boolean
+			return alive(pane)
+		end,
+	}
+end
+
+local autoTick: (state: State) -> ()
+local ciTick: (state: State) -> ()
+
 -- Sync ----------------------------------------------------------------------
 
 -- `after` runs once the fetch finished (not when a newer gen superseded it).
@@ -242,10 +355,12 @@ local function fetch(state: State, manual: boolean, after: (() -> ())?)
 			fetch(state, manual, after)
 			return
 		end
+		local synced = false
 		if issues and states and seq < state.fetchApplied then
 			-- A fetch started later already answered; this older snapshot would undo it.
 		elseif issues and states then
 			state.fetchApplied = seq
+			synced = true
 			state.issues, state.states, state.fetchedAt, state.error, state.failures = issues, states, nowSec(), nil, 0
 			saveCache(state)
 			kvSet("linear-todo.status", { at = nowSec(), ok = true, issues = #issues })
@@ -277,6 +392,10 @@ local function fetch(state: State, manual: boolean, after: (() -> ())?)
 		state.cx:render()
 		if after then
 			after()
+		end
+		if synced then
+			autoTick(state)
+			ciTick(state)
 		end
 	end)
 end
@@ -441,6 +560,27 @@ local function cancel(state: State, id: string)
 	end)
 end
 
+-- ✓ / Mark as done: a completed issue goes back to the first unstarted State, the rest to the first completed one.
+local function toggleDone(state: State, id: string)
+	local st = Model.stateById(state.states, stateIdOf(state, id))
+	local to = firstState(state, if st and st.type == "completed" then "unstarted" else "completed")
+	if to then
+		move(state, id, to)
+	end
+end
+
+-- Backlog: an issue in the backlog goes to the first unstarted State, the rest to the first backlog one.
+local function toggleBacklog(state: State, id: string)
+	local st = Model.stateById(state.states, stateIdOf(state, id))
+	local back = st ~= nil and st.type == "backlog"
+	local to = firstState(state, if back then "unstarted" else "backlog")
+	if to then
+		move(state, id, to)
+	elseif not back then
+		state.cx:toast("error", "This team has no Backlog state")
+	end
+end
+
 -- Editing -------------------------------------------------------------------
 
 -- The node path of a column's item list, from the main region root.
@@ -492,12 +632,27 @@ end
 
 local function ctxOf(state: State): Create.Ctx
 	local s = setupOf()
+	-- The card's folder choices: the ones Start used (most recent first), then the board's own folder.
+	local folders: { string } = {}
+	local saved = kvGet("linear-todo.folders")
+	local list: { any } = if type(saved) == "table" then saved else {}
+	for _, f in list do
+		if type(f) == "string" and #folders < 8 then
+			table.insert(folders, f)
+		end
+	end
+	local cwd = state.cx.cwd
+	if type(cwd) == "string" and cwd ~= "" and not table.find(folders, cwd) then
+		table.insert(folders, cwd)
+	end
 	return {
 		states = state.states,
 		meta = state.meta,
 		teamKey = if s then s.teamKey else "",
 		teamId = state.teamId or "",
 		viewerId = s and s.viewerId,
+		models = state.models,
+		folders = folders,
 	}
 end
 
@@ -542,7 +697,7 @@ local function openDraft(state: State, stateId: string, template: boolean, paren
 	local d = state.kept or Create.new(stateId, if state.mine then s.viewerId else nil)
 	state.kept, d.pop, d.error = nil, nil, nil
 	d.parentId, d.parentIdent = if parent then parent.id else nil, if parent then parent.identifier else nil
-	state.draft, state.lift, state.dropState, state.confirm, state.switcher = d, nil, nil, nil, false
+	state.draft, state.lift, state.dropState, state.confirm, state.switcher, state.addFocus = d, nil, nil, nil, false, false
 	if template then
 		Create.openPop(d, "template", state.cx)
 	else
@@ -561,10 +716,11 @@ local function closeDraft(state: State, keep: boolean)
 	state.cx:frame({ { "focus", tern.json.null } })
 end
 
--- Sends the modal's issue. The modal closes at once (or clears for "Create more"); a failure
--- reopens it with the text intact when it was closed.
-local function submitDraft(state: State)
-	local d = state.draft
+-- Sends the modal's issue, or `inline` (the Tasks View's add field; `created` gets the new issue).
+-- The modal closes at once (or clears for "Create more"); a failure reopens it with the text intact
+-- when it was closed.
+local function submitDraft(state: State, inline: Create.Draft?, created: ((issue: any) -> ())?)
+	local d = inline or state.draft
 	local key, teamId = state.key, state.teamId
 	if not d or not key or not teamId then
 		return
@@ -579,10 +735,13 @@ local function submitDraft(state: State)
 	-- Node keys join into dotted ids, so the placeholder key must not contain ".".
 	local tmp = string.format("new-%d", math.floor(tern.now() * 1000))
 	state.creating[tmp] = { stateId = d.stateId, title = input.title }
-	if d.more then
-		Create.again(d, state.cx)
-	else
-		closeDraft(state, false)
+	-- An inline draft has nothing to close: the add field cleared itself.
+	if not inline then
+		if d.more then
+			Create.again(d, state.cx)
+		else
+			closeDraft(state, false)
+		end
 	end
 	Linear.create(key, input, function(issue: any?, cerr: string?)
 		state.creating[tmp] = nil
@@ -604,6 +763,9 @@ local function submitDraft(state: State)
 			local dt = state.detail
 			if dt and dt.info and input.parentId == dt.id then
 				table.insert(dt.info.children, issue)
+			end
+			if created then
+				created(issue)
 			end
 			local newId = issue.id
 			if cancelId then
@@ -688,8 +850,43 @@ local function overlayFor(state: State, id: string): Overlay
 	return if base then table.clone(base) else {}
 end
 
--- Opens issue `id` in place of the board and fetches what the view adds (Linear.detail).
-local function openDetail(state: State, id: string)
+-- Loads omp's chat models for the card's model list, once per block run (a failure leaves none).
+local function loadModels(state: State)
+	if state.models or state.modelsLoading then
+		return
+	end
+	state.modelsLoading = true
+	local ok = pcall(tern.process.run, { "omp", "models", "--json" }, { timeout_ms = 20000 }, function(res: any)
+		state.modelsLoading = false
+		local models: { any } = {}
+		local decoded, data = pcall(tern.json.decode, res.stdout or "")
+		local rows = if res.status == 0 and decoded and type(data) == "table" then data.models else nil
+		for _, m in (if type(rows) == "table" then rows else {}) do
+			if type(m) == "table" and m.kind == "chat" and type(m.selector) == "string" then
+				table.insert(models, {
+					id = m.selector,
+					label = if type(m.name) == "string" then m.name else m.selector,
+					-- The selector tells apart models of the same name from different providers.
+					hint = m.selector,
+					thinking = if type(m.thinking) == "table" then m.thinking else nil,
+				})
+			end
+		end
+		state.models = models
+		if alive(state.cx.pane) then
+			state.cx:render()
+		end
+	end)
+	if not ok then
+		state.modelsLoading, state.models = false, {}
+	end
+end
+
+local runDetail: (state: State, dt: Detail.Detail, intent: Detail.Intent) -> ()
+
+-- Opens issue `id` in place of the board, or (`card`) in the Tasks View's card beside the list,
+-- and fetches what the view adds (Linear.detail).
+local function openDetail(state: State, id: string, card: boolean?)
 	local issue = find(state, id)
 	local key = state.key
 	if not issue or not key then
@@ -698,12 +895,24 @@ local function openDetail(state: State, id: string)
 	if state.edit then
 		endEdit(state, false)
 	end
+	local prev = state.detail
+	if prev and prev.card and prev.d.focus then
+		-- The card being replaced saves the field the caret was in.
+		runDetail(state, prev, prev.d.focus)
+	end
 	local stateId, title = Model.effective(issue, state.overlay)
-	local dt = Detail.new(issue, stateId or issue.state.id, title)
+	local dt = Detail.new(issue, stateId or issue.state.id, title, card)
 	state.detail, state.sel, state.lift, state.dropState, state.confirm, state.switcher, state.menu = dt, id, nil, nil, nil, false, nil
-	state.cx:frame({ { "focus", tern.json.null } })
+	-- A card opened while typing in the add field (a new issue landed) leaves the caret there.
+	if not (card and state.addFocus) then
+		state.addFocus = false
+		state.cx:frame({ { "focus", tern.json.null } })
+	end
 	if not state.meta then
 		loadMeta(state)
+	end
+	if card then
+		loadModels(state)
 	end
 	local g = state.gen
 	Linear.detail(key, id, function(info: any?, err: string?)
@@ -719,9 +928,14 @@ local function openDetail(state: State, id: string)
 	end)
 end
 
+-- Closes the issue view or the card; the Tasks View then shows the closed issue's card again.
 local function closeDetail(state: State)
-	state.detail, state.menu = nil, nil
+	local dt = state.detail
+	state.detail, state.menu, state.addFocus = nil, nil, false
 	state.cx:frame({ { "focus", tern.json.null } })
+	if dt and not dt.card and state.view == "tasks" and visible(columnsOf(state), dt.id) then
+		openDetail(state, dt.id, true)
+	end
 end
 
 -- Most issues one Start or Send to chat takes.
@@ -780,37 +994,180 @@ local function describe(state: State, ids: { string }, name: string, doing: (wha
 	end
 end
 
--- Hands issues `ids` to the window half, which opens one omp chat on them all (Model.START_TITLE).
-local function startAgent(state: State, ids: { string })
+-- Hands issues `ids` to the window half, which opens one omp chat per issue (Model.START_TITLE)
+-- with the card's model, thinking level and folder when `opts` gives them. A manual Start (not
+-- `auto`) gives the Issues a fresh CI watch.
+local function startAgent(state: State, ids: { string }, opts: { model: string?, thinking: string?, cwd: string? }?, auto: boolean?)
+	if not auto then
+		for _, id in ids do
+			if state.ci[id] then
+				setCi(state, id, nil)
+			end
+		end
+	end
 	describe(state, ids, "Start", function(what)
-		return "Starting " .. what .. " in omp…"
+		return "Starting " .. what .. (if #ids > 1 then " in separate omp chats…" else " in omp…")
 	end, function(entries)
-		local e = entries[1]
-		kvSet("linear-todo.start", if #entries == 1 then Model.startPrompt(e.issue, e.title, e.stateName, e.description) else Model.startPromptMany(entries))
+		kvSet("linear-todo.start", Model.startPrompts(entries, opts))
 		state.starting = true
 		state.cx:render()
 	end)
 end
 
--- Hands issues `ids` to the window half, which puts them into the open chat `chat` (Model.SEND_TITLE).
+autoTick = function(state: State)
+	local settings = Model.autoSettings(kvGet("linear-todo.auto"))
+	local s = setupOf()
+	-- Start is async: the 20 s gap keeps one batch in flight.
+	if not settings.on or not state.key or not s or not state.agentsSeen or state.starting or state.sending or nowSec() - (state.autoAt or 0) < 20 then
+		return
+	end
+	local linked = linkedStates(state)
+	local free = settings.max - Model.busySlots(linked)
+	if free <= 0 then
+		return
+	end
+	-- Copied key by key: stored tables may be read-only.
+	local started: { [string]: any } = {}
+	local stored = kvGet("linear-todo.autoStarted")
+	for id, t in (if type(stored) == "table" then stored else {}) do
+		started[id] = t
+	end
+	-- No opts: auto-start ignores the Mine filter.
+	local cands = Model.autoCandidates(Model.columns(state.issues, state.states, state.overlay, nil), s.viewerId, started, linked)
+	if #cands == 0 then
+		return
+	end
+	local b = state.budget
+	if not b or nowSec() - b.at >= 300 then
+		if state.budgetLoading then
+			return
+		end
+		state.budgetLoading = true
+		local ok = pcall(tern.process.run, { "omp", "usage", "--json", "-p", "anthropic" }, { timeout_ms = 20000 }, function(res: any)
+			state.budgetLoading = false
+			if not alive(state.cx.pane) then
+				return
+			end
+			local r = Model.budget(if res.status == 0 then res.stdout else nil, Model.BUDGET_LIMIT)
+			state.budget = { at = nowSec(), blocked = r.blocked, reason = r.reason }
+			state.cx:render()
+			autoTick(state)
+		end)
+		if not ok then
+			state.budgetLoading = false
+		end
+		return
+	end
+	if b.blocked then
+		state.cx:render()
+		return
+	end
+	local ids: { string } = {}
+	for i = 1, math.min(free, #cands) do
+		local id = cands[i].id
+		started[id] = nowSec()
+		table.insert(ids, id)
+	end
+	-- Marked before starting, so a failed Start never retries in a loop.
+	kvSet("linear-todo.autoStarted", started)
+	state.autoAt = nowSec()
+	startAgent(state, ids, { cwd = projectFolders(state)[1] }, true)
+end
+
+ciTick = function(state: State)
+	local ids: { string } = {}
+	for id, a in state.agents do
+		if a.state == "idle" or a.state == "exited" then
+			table.insert(ids, id)
+		end
+	end
+	for id in state.ci do
+		if not state.agents[id] then
+			table.insert(ids, id)
+		end
+	end
+	local g, runs = state.gen, 0
+	for _, id in ids do
+		local issue = find(state, id)
+		local a = state.agents[id]
+		if runs < 5 and issue and type(issue.branchName) == "string" and issue.branchName ~= "" and nowSec() - (state.ciAt[id] or 0) >= 120 then
+			state.ciAt[id] = nowSec()
+			runs += 1
+			local args = { "gh", "pr", "view", issue.branchName, "--json", "number,url,state,headRefOid,statusCheckRollup" }
+			local ok = pcall(tern.process.run, args, { cwd = (a and a.cwd) or projectFolders(state)[1], timeout_ms = 20000 }, function(res: any)
+				if g ~= state.gen or not alive(state.cx.pane) then
+					return
+				end
+				local pr = if res.status == 0 then Model.prStatus(res.stdout) else nil
+				local agent = state.agents[id]
+				local step = Model.ciStep(state.ci[id], pr, agent and agent.state, Model.CI_ROUNDS)
+				local entry = step.entry
+				if step.action == "send" then
+					if not agent or agent.state == "exited" or state.sending or not pr or not entry then
+						-- Nothing stored: the next sync tries again.
+						state.ciAt[id] = 0
+						return
+					end
+					setCi(state, id, entry)
+					kvSet("linear-todo.send", {
+						pane = agent.pane,
+						label = issue.identifier,
+						prompt = Model.ciPrompt(issue.identifier, pr, entry.rounds, Model.CI_ROUNDS),
+						ids = { id },
+						quiet = true,
+					})
+					state.sending = true
+					state.cx:render()
+				elseif step.action == "block" then
+					setCi(state, id, entry)
+					state.cx:toast("info", issue.identifier .. " is blocked", step.reason)
+					state.cx:render()
+				elseif step.action == "clear" then
+					setCi(state, id, nil)
+					state.cx:render()
+				end
+			end)
+			if not ok then
+				state.ciAt[id] = 0
+			end
+		end
+	end
+end
+
+local function closeCleanup(state: State)
+	local c = state.cleanup
+	if c then
+		Cleanup.close(c)
+		state.cleanup = nil
+	end
+end
+
+-- Hands issues `ids` to the window half, which puts them into the open chat `chat` (Model.SEND_TITLE)
+-- and links them to it.
 local function sendToChat(state: State, ids: { string }, chat: Chat)
 	describe(state, ids, "Send to chat", function(what)
 		return "Sending " .. what .. " to " .. chat.label .. "…"
 	end, function(entries)
-		kvSet("linear-todo.send", { pane = chat.pane, label = chat.label, prompt = Model.contextPrompt(entries) })
+		kvSet("linear-todo.send", { pane = chat.pane, label = chat.label, prompt = Model.contextPrompt(entries), ids = ids })
 		state.sending = true
 		state.cx:render()
 	end)
 end
 
--- j / k: the next or previous issue in the board's own order.
+-- Asks the window half to focus chat `pane` (Model.FOCUS_TITLE); it answers with "focused".
+local function focusPane(state: State, pane: number)
+	kvSet("linear-todo.focus", pane)
+	state.focusing = true
+end
+
+-- j / k: the next or previous issue in the board's own order (the card: the Tasks View's).
 local function stepDetail(state: State, dt: Detail.Detail, dir: number)
-	local list = Model.list(columnsOf(state))
+	local list: { any } = if dt.card then taskOrder(state) else Model.list(columnsOf(state))
 	for i, issue in list do
 		if issue.id == dt.id then
 			local to = list[i + dir]
 			if to then
-				openDetail(state, to.id)
+				openDetail(state, to.id, dt.card)
 			end
 			return
 		end
@@ -907,8 +1264,12 @@ local function saveProps(state: State, dt: Detail.Detail, before: any)
 	end
 end
 
--- Carries out what the issue view asked for.
-local function runDetail(state: State, dt: Detail.Detail, intent: Detail.Intent)
+-- Node paths of the card's ⋯ button (its issue menu hangs there) and of the Tasks View's add field.
+local CARD_MORE = "main.tasks.card.head.more"
+local ADD_FIELD = "main.tasks.left.add.field"
+
+-- Carries out what the issue view or the card asked for.
+runDetail = function(state: State, dt: Detail.Detail, intent: Detail.Intent)
 	if intent == "close" then
 		closeDetail(state)
 	elseif intent == "title" then
@@ -926,11 +1287,44 @@ local function runDetail(state: State, dt: Detail.Detail, intent: Detail.Intent)
 			u.revert()
 		end
 	elseif intent == "start" then
-		startAgent(state, { dt.id })
+		local d = dt.d
+		startAgent(state, { dt.id }, { model = d.model, thinking = d.thinking, cwd = d.cwd })
+		local cwd = d.cwd
+		if cwd then
+			-- The card's folder list: the most recent first, at most 8.
+			local folders = { cwd }
+			local saved = kvGet("linear-todo.folders")
+			for _, f in (if type(saved) == "table" then saved else {}) do
+				if type(f) == "string" and f ~= cwd and #folders < 8 then
+					table.insert(folders, f)
+				end
+			end
+			kvSet("linear-todo.folders", folders)
+		end
+	elseif intent == "pane" then
+		local a = state.agents[dt.id]
+		if a then
+			focusPane(state, a.pane)
+		end
+	elseif intent == "done" then
+		toggleDone(state, dt.id)
+	elseif intent == "full" then
+		openDetail(state, dt.id)
+	elseif intent == "chats" then
+		-- Send to chat, hung under the card's Session pill; the window half answers with "chats".
+		state.menu = { id = dt.id, ids = { dt.id }, cursor = 1, armed = false, anchor = "main.tasks.card.agent.chat", chats = true }
+		state.chats, state.listing = nil, true
 	elseif intent == "more" or intent == "split" then
 		-- The issue menu (⋯) or the Start dropdown (▾), hung under its button.
 		local split = intent == "split"
-		state.menu = { id = dt.id, ids = { dt.id }, cursor = 1, armed = false, anchor = if split then "main.tools.split" else "main.head.more", split = split }
+		state.menu = {
+			id = dt.id,
+			ids = { dt.id },
+			cursor = 1,
+			armed = false,
+			anchor = if split then "main.tools.split" elseif dt.card then CARD_MORE else "main.head.more",
+			split = split,
+		}
 	elseif intent == "copy" then
 		local issue = find(state, dt.id)
 		local what = dt.target
@@ -963,6 +1357,23 @@ local function runDetail(state: State, dt: Detail.Detail, intent: Detail.Intent)
 	end
 end
 
+-- R / F2 / Rename: the Tasks View edits the title in the issue's card (opened if need be), the
+-- other Views inline.
+local function beginRename(state: State, id: string)
+	if state.view ~= "tasks" then
+		startRename(state, id)
+		return
+	end
+	local dt = state.detail
+	if not (dt and dt.card and dt.id == id) then
+		openDetail(state, id, true)
+		dt = state.detail
+	end
+	if dt and dt.id == id then
+		Create.focus(dt.d, "title", state.cx)
+	end
+end
+
 -- Selection -----------------------------------------------------------------
 
 -- state.confirm while the bulk bar's "Cancel N?" awaits its second click (issue ids never clash).
@@ -972,7 +1383,7 @@ local BULK_BAR = "dock.bulk"
 -- A list's Draft holds these, for several issues, until Create.choose writes the pick over one of them.
 local UNSET_STATE, UNSET_PERSON, UNSET_PRIORITY = "", "?", -1
 
-type BulkKind = "status" | "priority" | "assignee"
+type BulkKind = "status" | "priority" | "assignee" | "labels"
 -- One issue's write in a bulk edit, and what puts it back (`backState`: the State to show meanwhile).
 type Step = { id: string, ov: Overlay, input: any, back: any, backState: string? }
 
@@ -1071,6 +1482,81 @@ local function applyMany(state: State, ids: { string }, kind: BulkKind, value: s
 	pushAll(state, steps, "Update", "Updated")
 end
 
+-- An issue's label ids as the board synced them.
+local function labelIdsOf(issue: any): { string }
+	local out: { string } = {}
+	local nodes = issue.labels and issue.labels.nodes
+	for _, l in (if type(nodes) == "table" then nodes else {}) do
+		if type(l) == "table" and type(l.id) == "string" then
+			table.insert(out, l.id)
+		end
+	end
+	return out
+end
+
+-- Adds `added` to and takes `removed` off every issue of `ids` that changes, with one undo for all.
+-- Adding a label drops the issue's other labels of the same label group, as Linear allows one per group.
+local function applyLabels(state: State, ids: { string }, added: { string }, removed: { string })
+	local meta = state.meta and state.meta.labels
+	local function groupOf(id: string): string?
+		for _, l in (if type(meta) == "table" then meta else {}) do
+			if l.id == id and type(l.parent) == "table" then
+				return l.parent.id
+			end
+		end
+		return nil
+	end
+	local drop: { [string]: boolean } = {}
+	for _, id in removed do
+		drop[id] = true
+	end
+	local addGroups: { [string]: string } = {}
+	for _, id in added do
+		local g = groupOf(id)
+		if g then
+			addGroups[g] = id
+		end
+	end
+	local steps: { Step } = {}
+	local skipped = 0
+	for _, id in ids do
+		local issue = find(state, id)
+		if not issue then
+			continue
+		end
+		local labels = issue.labels
+		if type(labels) == "table" and type(labels.pageInfo) == "table" and labels.pageInfo.hasNextPage then
+			-- The board knows only the first 50 labels; writing the list would drop the rest.
+			skipped += 1
+			continue
+		end
+		local prev = labelIdsOf(issue)
+		local nextIds: { string } = {}
+		for _, l in prev do
+			local g = groupOf(l)
+			if not drop[l] and not (g and addGroups[g] and addGroups[g] ~= l) then
+				table.insert(nextIds, l)
+			end
+		end
+		for _, l in added do
+			if not table.find(nextIds, l) then
+				table.insert(nextIds, l)
+			end
+		end
+		local same = #nextIds == #prev
+		for _, l in nextIds do
+			same = same and table.find(prev, l) ~= nil
+		end
+		if not same then
+			table.insert(steps, { id = id, ov = overlayFor(state, id), input = { labelIds = tern.json.array(nextIds) }, back = { labelIds = tern.json.array(prev) } })
+		end
+	end
+	if skipped > 0 then
+		state.cx:toast("error", "Edit labels in Linear for " .. skipped .. (if skipped == 1 then " issue" else " issues"), "They have more than 50 labels, more than the board loads")
+	end
+	pushAll(state, steps, "Update", "Updated")
+end
+
 -- Cancels every issue of `ids`, as ✕ does one, with one undo for all of them.
 local function cancelMany(state: State, ids: { string })
 	local cancelId = Model.cancelState(state.states)
@@ -1089,8 +1575,9 @@ local function cancelMany(state: State, ids: { string })
 	pushAll(state, steps, "Cancel", "Canceled")
 end
 
--- Opens a Status/Priority/Assignee list for `ids`: the create modal's popover on a Draft of its own,
--- anchored under `anchor`'s `kind` child. One issue's own value is checked, as in Linear.
+-- Opens a Status/Priority/Assignee/Labels list for `ids`: the create modal's popover on a Draft of its
+-- own, anchored under `anchor`'s `kind` child. One issue's own value is checked, as in Linear; Labels
+-- checks the labels every issue of `ids` has.
 local function openChoice(state: State, ids: { string }, kind: BulkKind, anchor: string, cx: BlockCx): Choice
 	local d = Create.new(UNSET_STATE, UNSET_PERSON)
 	d.root, d.anchor, d.priority = anchor, anchor, UNSET_PRIORITY
@@ -1100,11 +1587,28 @@ local function openChoice(state: State, ids: { string }, kind: BulkKind, anchor:
 		d.priority = if type(one.priority) == "number" then one.priority else 0
 		d.assigneeId = if type(one.assignee) == "table" then one.assignee.id else nil
 	end
+	local shared: { string }? = nil
+	for _, id in ids do
+		local issue = find(state, id)
+		local mine = if issue then labelIdsOf(issue) else {}
+		if not shared then
+			shared = mine
+		else
+			local both: { string } = {}
+			for _, l in shared do
+				if table.find(mine, l) then
+					table.insert(both, l)
+				end
+			end
+			shared = both
+		end
+	end
+	d.labelIds = table.clone(shared or {})
 	Create.openPop(d, kind, cx)
-	if kind == "assignee" and not state.meta then
+	if (kind == "assignee" or kind == "labels") and not state.meta then
 		loadMeta(state)
 	end
-	return { d = d, ids = ids, stateId = d.stateId, priority = d.priority, assigneeId = d.assigneeId }
+	return { d = d, ids = ids, stateId = d.stateId, priority = d.priority, assigneeId = d.assigneeId, labelIds = shared or {} }
 end
 
 -- Once the list closed, writes what was picked in it (nothing after Esc or a click outside);
@@ -1120,6 +1624,22 @@ local function takeChoice(state: State, c: Choice): boolean
 		applyMany(state, c.ids, "priority", tostring(d.priority))
 	elseif d.assigneeId ~= c.assigneeId then
 		applyMany(state, c.ids, "assignee", d.assigneeId or "none")
+	else
+		-- The Labels list stays open for several toggles, so its changes apply when it closes.
+		local added, removed = {}, {}
+		for _, l in d.labelIds do
+			if not table.find(c.labelIds, l) then
+				table.insert(added, l)
+			end
+		end
+		for _, l in c.labelIds do
+			if not table.find(d.labelIds, l) then
+				table.insert(removed, l)
+			end
+		end
+		if #added > 0 or #removed > 0 then
+			applyLabels(state, c.ids, added, removed)
+		end
 	end
 	return true
 end
@@ -1132,7 +1652,16 @@ local SEP: Item = { key = "sep" }
 
 -- The node path the menu hangs under: its anchor, else the issue's row or card.
 local function menuAnchor(state: State, m: Menu): string
-	return m.anchor or listPath(state, stateIdOf(state, m.id) or "") .. "." .. m.id
+	if m.anchor then
+		return m.anchor
+	end
+	local stateId = stateIdOf(state, m.id) or ""
+	if state.view == "tasks" then
+		local st = Model.stateById(state.states, stateId)
+		local rows = if st and st.type == "backlog" then "rows-backlog" elseif st and st.type == "completed" then "rows-done" else "rows"
+		return "main.tasks.left." .. rows .. "." .. m.id
+	end
+	return listPath(state, stateId) .. "." .. m.id
 end
 
 -- The menu's entries, or the open chats once "Send to chat" is drilled into; several issues get
@@ -1154,7 +1683,8 @@ local function menuItems(state: State, m: Menu): { Item }
 		return { { key = "start", text = "▷ New chat" }, { key = "send", text = "Send to a session", sub = true } }
 	end
 	local n = #m.ids
-	local board = state.detail == nil
+	-- The card sits beside the board, so its ⋯ offers everything a row's does.
+	local board = state.detail == nil or state.detail.card == true
 	local cancelText = if n > 1 then "Cancel " .. n .. " issues" else "Cancel issue"
 	local items: { Item } = if board then {
 		{ key = "status", text = "Status", sub = true },
@@ -1276,7 +1806,7 @@ local function runItem(state: State, m: Menu, key: string, cx: BlockCx)
 		cx:copy(issue.url)
 		cx:toast("success", "Copied the link to " .. issue.identifier)
 	elseif key == "rename" then
-		startRename(state, m.id)
+		beginRename(state, m.id)
 	elseif key == "cancel" then
 		if #m.ids == 1 then
 			cancel(state, m.id)
@@ -1350,21 +1880,29 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		end
 		return
 	end
-	local dt = state.detail
-	if dt and (string.sub(name, 1, 3) == "cm-" or string.sub(name, 1, 3) == "dt-") then
-		local before, left = Detail.snapshot(dt.d), dt.d.focus
-		local r = Detail.act(dt, name, value, ctxOf(state), cx)
-		-- A click that takes the caret out of the title or description (or closes the view)
-		-- saves that field first; `refresh` would otherwise put Linear's value back.
-		if left and (dt.d.focus ~= left or r == "close") then
-			runDetail(state, dt, left)
+	local cl = state.cleanup
+	if cl and string.sub(name, 1, 3) == "wt-" then
+		if Cleanup.act(cl, name, cleanupHost(state)) == "close" then
+			closeCleanup(state)
 		end
-		if type(r) == "string" then
-			runDetail(state, dt, r)
+		return
+	elseif name == "cleanup" then
+		if state.detail then
+			closeDetail(state)
 		end
-		saveProps(state, dt, before)
+		closeMenu(state)
+		state.switcher = false
+		state.cleanup = Cleanup.open(projectFolders(state), cleanupHost(state))
+		return
+	elseif name == "auto-toggle" then
+		local settings = Model.autoSettings(kvGet("linear-todo.auto"))
+		kvSet("linear-todo.auto", { on = not settings.on, max = settings.max })
+		state.cx:toast("info", if settings.on then "Auto-start off" else "Auto-start on")
+		state.cx:render()
+		autoTick(state)
 		return
 	end
+	-- The bulk bar's and the menu's lists come before the issue view: the card shows beside them.
 	local b = state.bulk
 	if b and string.sub(name, 1, 3) == "cm-" then
 		Create.act(b.d, name, value, ctxOf(state), cx)
@@ -1393,6 +1931,21 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			return
 		end
 	end
+	local dt = state.detail
+	if dt and (string.sub(name, 1, 3) == "cm-" or string.sub(name, 1, 3) == "dt-") then
+		local before, left = Detail.snapshot(dt.d), dt.d.focus
+		local r = Detail.act(dt, name, value, ctxOf(state), cx)
+		-- A click that takes the caret out of the title or description (or closes the view)
+		-- saves that field first; `refresh` would otherwise put Linear's value back.
+		if left and (dt.d.focus ~= left or r == "close") then
+			runDetail(state, dt, left)
+		end
+		if type(r) == "string" then
+			runDetail(state, dt, r)
+		end
+		saveProps(state, dt, before)
+		return
+	end
 	if name ~= "ws-pop" then
 		state.switcher = false
 	end
@@ -1420,7 +1973,7 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		switchTo(state, value)
 		return
 	end
-	if state.lift and name ~= "sel" and name ~= "lift" and name ~= "drop" then
+	if state.lift and name ~= "sel" and name ~= "lift" and name ~= "drop" and name ~= "tgroup" then
 		state.lift, state.dropState = nil, nil
 	end
 	if name == "sel" then
@@ -1433,7 +1986,34 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			return
 		end
 		state.confirm = nil
+		if state.view ~= "tasks" then
+			openDetail(state, value)
+		elseif state.detail and state.detail.id == value then
+			state.sel = value
+		else
+			openDetail(state, value, true)
+		end
+	elseif name == "open" then
 		openDetail(state, value)
+	elseif name == "tglyph" then
+		-- A linked issue's glyph shows its chat's state, and clicking it goes there.
+		local a = state.agents[value]
+		if a then
+			focusPane(state, a.pane)
+		else
+			toggleDone(state, value)
+		end
+	elseif name == "tdone" then
+		toggleDone(state, value)
+	elseif name == "tback" then
+		toggleBacklog(state, value)
+	elseif name == "tgroup" then
+		local g = state.groupsOpen
+		if value == "backlog" then
+			g.backlog = not g.backlog
+		elseif value == "done" then
+			g.done = not g.done
+		end
 	elseif name == "menu" then
 		openMenu(state, value)
 	elseif name == "split" then
@@ -1460,7 +2040,7 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 			openDraft(state, col.state.id, false)
 		end
 	elseif name == "rename" then
-		startRename(state, value)
+		beginRename(state, value)
 	elseif name == "cancel" then
 		state.sel = value
 		if state.confirm == value then
@@ -1477,7 +2057,7 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 		if state.confirm == BULK then
 			state.confirm = nil
 		end
-		if value == "status" or value == "priority" or value == "assignee" then
+		if value == "status" or value == "priority" or value == "assignee" or value == "labels" then
 			state.bulk = openChoice(state, pickedIds(state), value :: BulkKind, BULK_BAR, cx)
 		end
 	elseif name == "bulk-cancel" then
@@ -1502,9 +2082,12 @@ local function act(state: State, name: string, value: string, cx: BlockCx)
 	elseif name == "sync" then
 		fetch(state, true)
 	elseif name == "view" then
-		if value == "kanban" or value == "list" then
-			-- The field's node path depends on the View.
-			state.view, state.edit = value, nil
+		if value == "kanban" or value == "list" or value == "tasks" then
+			-- The field's node path depends on the View; the card belongs to the Tasks View.
+			state.view, state.edit, state.addFocus = value, nil, false
+			if value ~= "tasks" and state.detail and state.detail.card then
+				state.detail = nil
+			end
 			kvSet("linear-todo.view", value)
 		end
 	elseif name == "fold" then
@@ -1547,6 +2130,36 @@ local function firstShown(state: State, col: Column): string
 	return (if state.view == "list" then (Model.nest(col.issues))[1] else col.issues[1]).id
 end
 
+-- Enter in the Tasks View's add field: an issue titled with its text in the first unstarted State,
+-- created as the New issue modal creates one; once Linear has it, it is selected and its card opened.
+local function addIssue(state: State)
+	local title = string.match(state.add.text, "^%s*(.-)%s*$") or ""
+	if title == "" then
+		return
+	end
+	local s = setupOf()
+	if not s or not state.key or s.teamId ~= state.teamId then
+		state.cx:toast("error", "No Linear workspace yet", "Run Linear: add workspace")
+		return
+	end
+	local stateId = firstState(state, "unstarted")
+	if not stateId then
+		state.cx:toast("error", "Create failed", "This team has no unstarted state")
+		return
+	end
+	local d = Create.new(stateId, if state.mine then s.viewerId else nil)
+	Field.reset(d.title, title)
+	Field.reset(state.add, "")
+	-- The reset made a new node: put the caret back for the next issue.
+	state.cx:frame({ { "focus", ADD_FIELD .. "_" .. state.add.rev } })
+	submitDraft(state, d, function(issue: any)
+		local dt = state.detail
+		if state.view == "tasks" and not state.draft and not (dt and not dt.card) then
+			openDetail(state, issue.id, true)
+		end
+	end)
+end
+
 local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 	local d = state.draft
 	if d then
@@ -1560,20 +2173,32 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 		end
 		return r :: boolean
 	end
+	local cl = state.cleanup
+	if cl then
+		local r = Cleanup.key(cl, k, cleanupHost(state))
+		if r == "close" then
+			closeCleanup(state)
+		end
+		-- While the clean-up is open no key reaches the board behind it.
+		return r ~= false
+	end
 	-- The issue view's "Send to chat" list sits over it.
 	local m = state.menu
 	if m then
 		return menuKey(state, m, k, cx)
 	end
-	local dt = state.detail
-	if dt then
-		local before = Detail.snapshot(dt.d)
-		local r = Detail.key(dt, k, ctxOf(state), cx)
-		if type(r) == "string" then
-			runDetail(state, dt, r)
+	if state.addFocus then
+		local what = Field.edit_key(state.add, k, cx)
+		if what == "submit" then
+			addIssue(state)
+		elseif what == "blur" then
+			Field.reset(state.add, "")
+			state.addFocus = false
+			cx:frame({ { "focus", tern.json.null } })
+		elseif what == nil then
+			return false
 		end
-		saveProps(state, dt, before)
-		return r ~= false
+		return true
 	end
 	local b = state.bulk
 	if b then
@@ -1582,6 +2207,17 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 			state.bulk = nil
 		end
 		return used
+	end
+	-- The card takes keys only while a field or list of its own is open; else they act on the board.
+	local dt = state.detail
+	if dt and (not dt.card or dt.d.pop or dt.d.focus or dt.commenting) then
+		local before = Detail.snapshot(dt.d)
+		local r = Detail.key(dt, k, ctxOf(state), cx)
+		if type(r) == "string" then
+			runDetail(state, dt, r)
+		end
+		saveProps(state, dt, before)
+		return r ~= false
 	end
 	if state.switcher then
 		local n = tonumber(k.name)
@@ -1632,6 +2268,35 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 	end
 	if mod or k.alt then
 		return false
+	end
+	if state.view == "tasks" then
+		if name == "left" or name == "h" or name == "right" or name == "l" then
+			return false
+		elseif name == "up" or name == "k" or name == "down" or name == "j" then
+			local order = taskOrder(state)
+			local at: number? = nil
+			for i, issue in order do
+				if issue.id == state.sel then
+					at = i
+				end
+			end
+			local to = if at then order[at + (if name == "up" or name == "k" then -1 else 1)] else order[1]
+			if not to then
+				return false
+			end
+			state.sel, state.confirm = to.id, nil
+			if state.lift then
+				-- A lifted issue drops into the State of the row the selection is on.
+				state.dropState = stateIdOf(state, to.id)
+			elseif state.detail then
+				openDetail(state, to.id, true)
+			end
+			return true
+		elseif name == "a" then
+			state.addFocus = true
+			cx:frame({ { "focus", ADD_FIELD .. "_" .. state.add.rev } })
+			return true
+		end
 	end
 	local horizontal = if name == "left" or name == "h" then -1 elseif name == "right" or name == "l" then 1 else 0
 	if horizontal ~= 0 then
@@ -1708,6 +2373,9 @@ local function onKey(state: State, k: Key, cx: BlockCx): boolean?
 			state.lift, state.dropState = nil, nil
 		elseif state.confirm then
 			state.confirm = nil
+		elseif state.detail then
+			-- Only the Tasks View's card gets here (the issue view takes its own keys).
+			closeDetail(state)
 		elseif state.sel then
 			state.sel = nil
 		else
@@ -2063,9 +2731,196 @@ local function column(state: State, col: Column, liftState: string?, list: boole
 	})
 end
 
+-- One row of the Tasks View: the State glyph (its chat's state while linked), title, a meta line
+-- with pills, and the short age that hover swaps for the actions.
+local function taskRow(state: State, issue: any, liftState: string?): Node
+	local id = issue.id
+	local stateId, title = Model.effective(issue, state.overlay)
+	local st = Model.stateById(state.states, stateId)
+	local stype: string = if st then st.type else "unstarted"
+	local now = nowSec()
+	local a = state.agents[id]
+	local ci = state.ci[id]
+	local blocked = ci and ci.blocked
+	local kind = if blocked then "blocked" elseif a then Model.agentKind(a.state) else nil
+	local line = if blocked then Model.blockedLine(blocked) elseif a then Model.agentLine(kind, now - a.since) else nil
+	local meta: { Node } = {
+		if line then el("span", "t-agent", "agent", { class = "lt-t-agent", attrs = { ["data-kind"] = kind }, text = line })
+			else el("span", "t-state", "state", { class = "lt-t-state", text = if st then st.name else "" }),
+	}
+	local function pill(key: string, tone: string, text: string, c: string?)
+		-- Not `data-tone`: Tern drops that attribute (it belongs to the `tone` prop).
+		table.insert(meta, el("span", "t-pill", key, { class = "lt-t-pill", text = text, attrs = { ["data-pill"] = tone, ["data-c"] = c } }))
+	end
+	local pc = Model.prioClass(issue.priority)
+	if pc ~= "p0" then
+		pill("prio", pc, PRIO_NAME[issue.priority])
+	end
+	local labels = issue.labels and issue.labels.nodes
+	if type(labels) == "table" then
+		for i = 1, math.min(#labels, 2) do
+			pill("l" .. i, "label", labels[i].name, Model.labelClass(labels[i].color))
+		end
+	end
+	if a then
+		pill("pane", "pane", "pane")
+	end
+	pill("id", "id", issue.identifier)
+	local done, armed = stype == "completed", state.confirm == id
+	local slot: { Node } = {}
+	if kind ~= "running" then
+		local t = Model.epoch(issue.updatedAt)
+		local ok, full = pcall(os.date, "%a %d %b %Y, %H:%M", t)
+		table.insert(slot, el("span", "t-age", "age", {
+			class = "lt-t-age",
+			text = Model.short(issue.updatedAt, now),
+			title = if t and ok and type(full) == "string" then "Updated " .. full else nil,
+		}))
+	end
+	local function button(key: string, what: string, text: string, hint: string, click: string, confirm: boolean?): Node
+		return el("button", "t-act", key, { class = "lt-t-act", text = text, aria = hint, title = hint, attrs = { ["data-kind"] = what, ["data-confirm"] = flag(confirm == true) }, actions = { click = click } })
+	end
+	table.insert(slot, el("div", "t-actions", "actions", { class = "lt-t-actions" }, {
+		button("done", if done then "undone" else "done", if done then "↺" else "✓", if done then "Reopen" else "Mark as done", "tdone=" .. id),
+		if stype == "backlog" then button("back", "unbacklog", "↑", "Move out of the Backlog", "tback=" .. id)
+			else button("back", "backlog", "↓", "Move to the Backlog", "tback=" .. id),
+		button("cancel", "cancel", if armed then "Cancel?" else "✕", if armed then "Click again to cancel the issue" else "Cancel issue", "cancel=" .. id, armed),
+		button("grip", "grip", "⠿", if state.lift == id then "Cancel move" else "Pick up, then click an issue in the target State", "lift=" .. id),
+		button("more", "more", "⋯", "More actions (m)", "menu=" .. id),
+	}))
+	return el("div", "t-row", id, {
+		class = "lt-t-row",
+		attrs = {
+			["data-sel"] = flag(state.sel == id),
+			["data-picked"] = flag(state.picked[id] == true),
+			["data-done"] = flag(done),
+			["data-mark"] = if state.lift == id then "pick" else nil,
+			["data-drop"] = if liftState and stateId ~= liftState then "on" else nil,
+			["data-confirm"] = flag(armed),
+		},
+		actions = { click = "sel=" .. id, dblclick = "open=" .. id },
+	}, {
+		el("button", "t-glyph", "glyph", {
+			class = "lt-t-glyph",
+			attrs = { ["data-kind"] = kind or stype },
+			aria = if a then "Open its chat" elseif done then "Reopen" else "Mark as done",
+			title = if a then "Open its chat" elseif done then "Reopen" else "Mark as done",
+			actions = { click = "tglyph=" .. id },
+		}),
+		el("div", "t-text", "text", { class = "lt-t-text" }, {
+			el("div", "t-name", "name", { class = "lt-t-name", text = title }),
+			el("div", "t-meta", "meta", { class = "lt-t-meta" }, meta),
+		}),
+		el("div", "t-slot", "slot", { class = "lt-t-slot" }, slot),
+	})
+end
+
+-- The Tasks View: "Issues" with the add field, the open issues, the folded Backlog and Done
+-- groups, and the card of the opened issue beside them.
+local function tasksView(state: State, cols: { Column }, liftState: string?): Node
+	local g = Model.taskGroups(cols)
+	local lifting = if state.lift then "on" else nil
+	local function rows(key: string, issues: { any }, lead: { Node }): Node
+		for _, issue in issues do
+			table.insert(lead, taskRow(state, issue, liftState))
+		end
+		return el("div", "t-rows", key, { class = "lt-t-rows", attrs = { ["data-lift"] = lifting } }, lead)
+	end
+	-- Issues on their way to Linear, as the other Views show them.
+	local pending: { Node } = {}
+	for tmp, c in state.creating do
+		local st = Model.stateById(state.states, c.stateId)
+		if st and (st.type == "started" or st.type == "unstarted") then
+			table.insert(pending, el("div", "t-row", tmp, { class = "lt-t-row" }, {
+				el("button", "t-glyph", "glyph", { class = "lt-t-glyph", attrs = { ["data-kind"] = st.type } }),
+				el("div", "t-text", "text", { class = "lt-t-text" }, {
+					el("div", "t-name", "name", { class = "lt-t-name", text = c.title }),
+					el("div", "t-meta", "meta", { class = "lt-t-meta" }, { el("span", "t-state", "state", { class = "lt-t-state", text = "Creating…" }) }),
+				}),
+			}))
+		end
+	end
+	local left: { Node } = {
+		el("div", "t-head", "head", { class = "lt-t-head" }, {
+			el("span", "t-title", "title", { class = "lt-t-title", text = "Issues" }),
+			el("span", "t-sub", "sub", { class = "lt-t-sub", text = #g.open .. " open" }),
+		}),
+		el("div", "t-add", "add", { class = "lt-t-add", attrs = { ["data-focus"] = flag(state.addFocus) } }, {
+			el("span", "t-add-circle", "circle", { class = "lt-t-add-circle" }),
+			Field.node("input", { key = "field", role = ROLE .. "t-input", class = "lt-t-input", placeholder = "Add an issue" }, state.add, "", ADD_FIELD),
+		}),
+		rows("rows", g.open, pending),
+	}
+	for _, grp in { { key = "backlog", name = "Backlog", issues = g.backlog, open = state.groupsOpen.backlog }, { key = "done", name = "Done", issues = g.done, open = state.groupsOpen.done } } do
+		if #grp.issues > 0 then
+			table.insert(left, el("button", "t-group", "g-" .. grp.key, {
+				class = "lt-t-group",
+				text = grp.name .. " (" .. #grp.issues .. ")",
+				attrs = { ["data-open"] = flag(grp.open), ["aria-expanded"] = if grp.open then "true" else "false" },
+				actions = { click = "tgroup=" .. grp.key },
+			}))
+			if grp.open then
+				table.insert(left, rows("rows-" .. grp.key, grp.issues, {}))
+			end
+		end
+	end
+	local kids: { Node } = { el("div", "t-left", "left", { class = "lt-t-left" }, left) }
+	local dt = state.detail
+	local issue = dt and find(state, dt.id)
+	if dt and issue then
+		-- As the issue view does: Linear's values flow into every field the caret is not in.
+		local stateId, title = Model.effective(issue, state.overlay)
+		Detail.refresh(dt, issue, stateId or issue.state.id, title, state.overlay[dt.id] == nil)
+		local order, pos = taskOrder(state), 0
+		for i, it in order do
+			if it.id == dt.id then
+				pos = i
+			end
+		end
+		local a = state.agents[dt.id]
+		local ci = state.ci[dt.id]
+		local blocked = ci and ci.blocked
+		local kind = if a then Model.agentKind(a.state) else nil
+		local m = state.menu
+		table.insert(kids, Detail.card(dt, issue, ctxOf(state), {
+			agent = if blocked then { kind = "blocked", line = Model.blockedLine(blocked) }
+				elseif a then { kind = kind, line = Model.agentLine(kind, nowSec() - a.since) }
+				else nil,
+			live = a ~= nil and a.state ~= "exited",
+			pos = pos,
+			total = #order,
+			menu = m ~= nil and m.id == dt.id and m.anchor == CARD_MORE,
+		}))
+	end
+	return el("div", "tasks", "tasks", { class = "lt-tasks" }, kids)
+end
+
 local function tab(state: State, name: ViewName, text: string): Node
 	local on = state.view == name
 	return el("button", "tab", name, { class = "lt-tab", text = text, attrs = { ["data-on"] = flag(on), ["aria-pressed"] = if on then "true" else "false" }, actions = { click = "view=" .. name } })
+end
+
+-- The auto-start chip: off, held by the budget gate, or busy/max slots.
+local function autoChip(state: State): Node
+	local settings = Model.autoSettings(kvGet("linear-todo.auto"))
+	local on = settings.on
+	local b = state.budget
+	local hold = on and b ~= nil and b.blocked
+	local text, title
+	if not on then
+		text, title = "Auto · off", "Auto-start is off; click to start your Issues labelled agent on their own"
+	elseif hold then
+		text, title = "Auto · budget", (b and b.reason) or "Budget limit reached"
+	else
+		text, title = "Auto · " .. Model.busySlots(linkedStates(state)) .. "/" .. settings.max, "Auto-start is on; click to turn it off"
+	end
+	return el("button", "auto", "auto", {
+		class = "lt-tab lt-auto",
+		text = text,
+		title = title,
+		attrs = { ["data-on"] = flag(on), ["data-hold"] = flag(hold) },
+		actions = { click = "auto-toggle" },
+	})
 end
 
 local function header(state: State, count: number): { Node }
@@ -2090,7 +2945,7 @@ local function header(state: State, count: number): { Node }
 				el("span", "ws-name", "name", { class = "lt-ws-name", text = s.orgName }),
 				el("span", "ws-team", "team", { class = "lt-ws-team", text = s.teamKey .. " ▾" }),
 			} else { el("span", "ws-name", "name", { class = "lt-ws-name", text = if s then s.teamKey .. " ▾" else "Linear ▾" }) }),
-			el("div", "tabs", "tabs", { class = "lt-tabs" }, { tab(state, "kanban", "Kanban"), tab(state, "list", "List") }),
+			el("div", "tabs", "tabs", { class = "lt-tabs" }, { tab(state, "kanban", "Kanban"), tab(state, "list", "List"), tab(state, "tasks", "Tasks") }),
 			el("button", "mine", "mine", {
 				class = "lt-tab lt-mine",
 				text = "Mine",
@@ -2098,6 +2953,7 @@ local function header(state: State, count: number): { Node }
 				attrs = { ["data-on"] = flag(state.mine), ["aria-pressed"] = if state.mine then "true" else "false" },
 				actions = { click = "mine" },
 			}),
+			autoChip(state),
 			el("span", "count", "count", { class = "lt-count", text = tostring(count) }),
 			el("span", "spacer", "sp", { class = "lt-spacer" }),
 			el("button", "new", "new", { class = "lt-new", text = "+ New issue", aria = "New issue", title = "New issue (c)", actions = { click = "new" } }),
@@ -2134,6 +2990,9 @@ local function switcher(state: State): Node
 	table.insert(rows, el("button", "pop-row", "add", { class = "lt-pop-row", actions = { click = "ws-add" } }, {
 		el("span", "pop-label", "label", { class = "lt-pop-label", text = "Add workspace…" }),
 	}))
+	table.insert(rows, el("button", "pop-row", "cleanup", { class = "lt-pop-row", actions = { click = "cleanup" } }, {
+		el("span", "pop-label", "label", { class = "lt-pop-label", text = "Clean up worktrees…" }),
+	}))
 	return {
 		k = "overlay",
 		p = { key = "switcher", role = ROLE .. "switcher", aria = "Linear workspaces", anchor = { node = "main.head.ws", side = "below" }, size = "sm" },
@@ -2141,7 +3000,7 @@ local function switcher(state: State): Node
 	} :: any
 end
 
--- The bulk bar: how many issues are ticked, their Status/Priority/Assignee lists, cancel, Start (2+) and clear.
+-- The bulk bar: how many issues are ticked, their Status/Priority/Assignee/Labels lists, cancel, Start (2+) and clear.
 local function bulkBar(state: State, n: number): Node
 	local armed = state.confirm == BULK
 	local open = state.bulk and state.bulk.d.pop and state.bulk.d.pop.kind
@@ -2158,6 +3017,7 @@ local function bulkBar(state: State, n: number): Node
 		list("status", "Status"),
 		list("priority", "Priority"),
 		list("assignee", "Assignee"),
+		list("labels", "Labels"),
 		el("button", "bulk-btn", "cancel", {
 			class = "lt-bulk-btn lt-del",
 			text = if armed then "Cancel " .. n .. "?" else "Cancel issues",
@@ -2169,11 +3029,13 @@ local function bulkBar(state: State, n: number): Node
 		el("button", "bulk-btn", "clear", { class = "lt-bulk-btn", text = "×", aria = "Clear selection", title = "Clear selection (Esc)", actions = { click = "unpick" } }),
 	}
 	if n >= 2 then
-		table.insert(kids, 7, el("button", "start", "start", {
+		-- Before the × at the end.
+		local beforeClear = #kids
+		table.insert(kids, beforeClear, el("button", "start", "start", {
 			class = "lt-start",
 			text = "▷ Start",
 			aria = "Start in omp",
-			title = "Start working on the selected issues in one new omp chat",
+			title = "Start each selected issue in its own new omp chat",
 			actions = { click = "bulk-start" },
 		}))
 	end
@@ -2258,7 +3120,7 @@ local function dock(state: State): Node?
 			}))
 		end
 	end
-	local n = if state.detail then 0 else #pickedIds(state)
+	local n = if state.detail and not state.detail.card then 0 else #pickedIds(state)
 	if n > 0 then
 		table.insert(kids, bulkBar(state, n))
 	end
@@ -2271,9 +3133,13 @@ local function empty(kids: { Node }, text: string): BlockView
 end
 
 local function view(state: State): BlockView
+	local cl = state.cleanup
+	if cl then
+		return { main = region("main", Cleanup.view(cl)) }
+	end
 	local dt = state.detail
 	local opened = dt and find(state, dt.id)
-	if dt and opened then
+	if dt and opened and not dt.card then
 		-- Linear's values flow into every field the caret is not in (and into the chips while
 		-- no write to the issue is in flight).
 		local stateId, title = Model.effective(opened, state.overlay)
@@ -2294,11 +3160,12 @@ local function view(state: State): BlockView
 				elseif m then region("layer", { Create.scrim("menu-close"), menuView(state, m) })
 				else nil,
 		}
-	elseif dt then
-		-- The issue left the board (canceled here or elsewhere, or moved out by a sync).
-		state.detail = nil
 	end
 	local cols = columnsOf(state)
+	if dt and not (dt.card and visible(cols, dt.id)) then
+		-- The issue left the board (canceled here or elsewhere, moved out by a sync, or hidden by Mine).
+		state.detail, dt = nil, nil
+	end
 	if state.menu and not visible(cols, state.menu.id) then
 		-- Its issue left the board (canceled, or moved out by a sync).
 		state.menu = nil
@@ -2312,19 +3179,24 @@ local function view(state: State): BlockView
 		return empty(kids, if state.loading then "Loading…" else "No workflow states loaded yet.")
 	end
 	local liftState = stateIdOf(state, state.lift)
-	local list = state.view == "list"
-	local nodes: { Node } = {}
-	for _, col in cols do
-		table.insert(nodes, column(state, col, liftState, list))
-	end
-	if list then
-		table.insert(kids, el("div", "rows", "rows", { class = "lt-listview" }, nodes))
+	if state.view == "tasks" then
+		table.insert(kids, tasksView(state, cols, liftState))
 	else
-		table.insert(kids, el("div", "board", "board", { class = "lt-board" }, nodes))
+		local list = state.view == "list"
+		local nodes: { Node } = {}
+		for _, col in cols do
+			table.insert(nodes, column(state, col, liftState, list))
+		end
+		if list then
+			table.insert(kids, el("div", "rows", "rows", { class = "lt-listview" }, nodes))
+		else
+			table.insert(kids, el("div", "board", "board", { class = "lt-board" }, nodes))
+		end
 	end
 	local d = state.draft
 	local layer = if d then region("layer", Create.view(d, ctxOf(state)))
 		elseif state.switcher then region("layer", { Create.scrim("ws-pop"), switcher(state) })
+		elseif dt and dt.d.pop then region("layer", { Create.scrim("cm-unpop"), Create.popover(dt.d, ctxOf(state), Detail.popAt(dt)) })
 		elseif state.bulk then region("layer", { Create.scrim("cm-unpop"), Create.popover(state.bulk.d, ctxOf(state)) })
 		elseif state.menu then region("layer", { Create.scrim("menu-close"), menuView(state, state.menu) })
 		else nil
@@ -2337,6 +3209,7 @@ tern.block.define("board", {
 	features = { "edit", "undo" },
 
 	init = function(cx: BlockCx, _args: { string }, _saved: any): State
+		local v = kvGet("linear-todo.view")
 		local state: State = {
 			cx = cx,
 			gen = 0,
@@ -2356,16 +3229,36 @@ tern.block.define("board", {
 			sending = false,
 			loading = false,
 			failures = 0,
-			view = if kvGet("linear-todo.view") == "list" then "list" else "kanban",
+			view = if v == "list" or v == "tasks" then v else "kanban",
 			mine = kvGet("linear-todo.mine") == true,
 			folded = {},
 			picked = {},
+			agents = {},
+			add = Field.new("", false, 255),
+			addFocus = false,
+			groupsOpen = { backlog = false, done = false },
+			modelsLoading = false,
+			focusing = false,
+			agentsSeen = false,
+			budgetLoading = false,
+			ciAt = {},
+			ci = {},
 		}
 		-- Copied key by key: stored tables may be read-only.
 		local folded = kvGet("linear-todo.folded")
 		for id, on in (if type(folded) == "table" then folded else {}) do
 			if on == true then
 				state.folded[id] = true
+			end
+		end
+		local ci = kvGet("linear-todo.ci")
+		for id, e in (if type(ci) == "table" then ci else {}) do
+			if type(e) == "table" and type(e.rounds) == "number" then
+				state.ci[id] = {
+					rounds = e.rounds,
+					sha = if type(e.sha) == "string" then e.sha else nil,
+					blocked = if type(e.blocked) == "string" then e.blocked else nil,
+				}
 			end
 		end
 		local s = setupOf()
@@ -2389,6 +3282,8 @@ tern.block.define("board", {
 			return Model.SEND_TITLE
 		elseif state.listing then
 			return Model.CHATS_TITLE
+		elseif state.focusing then
+			return Model.FOCUS_TITLE
 		end
 		local s = setupOf()
 		return "Linear · " .. (if s and s.teamKey then (s.orgName or "") .. " · " .. s.teamKey else "not set up")
@@ -2412,6 +3307,25 @@ tern.block.define("board", {
 			end
 			return
 		end
+		-- The Tasks View's add field. Its focus also reaches the card below, which saves the
+		-- field the caret left.
+		local add = state.add
+		if ev.ev == "focus" then
+			state.addFocus = ev.id ~= nil and ev.id == add.id
+		elseif (ev.ev == "edit" or ev.ev == "undo") and ev.id ~= nil and ev.id == add.id then
+			if ev.ev == "edit" then
+				Field.apply_edit(add, ev)
+			else
+				Field.undo_step(add, false)
+			end
+			return
+		end
+		-- The search box of the bulk bar's or the menu's list.
+		local c = state.bulk or (state.menu and state.menu.choice)
+		if c and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
+			Create.event(c.d, ev)
+			return
+		end
 		local dt = state.detail
 		if dt and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
 			local mine, left = Detail.event(dt, ev)
@@ -2422,12 +3336,6 @@ tern.block.define("board", {
 			if not mine and ev.ev == "undo" then
 				act(state, "undo", "", cx)
 			end
-			return
-		end
-		-- The search box of the bulk bar's or the menu's list.
-		local c = state.bulk or (state.menu and state.menu.choice)
-		if c and (ev.ev == "edit" or ev.ev == "undo" or ev.ev == "focus") then
-			Create.event(c.d, ev)
 			return
 		end
 		local e = state.edit
@@ -2460,6 +3368,32 @@ tern.block.define("board", {
 			return
 		end
 		local value = if type(ev.value) == "string" then ev.value else ""
+		-- From the window half: the linked chat of each issue and its agent state.
+		if ev.act == "agents" then
+			local now, agents: { [string]: Agent } = nowSec(), {}
+			for _, a in (if type(ev.agents) == "table" then ev.agents else {}) do
+				if type(a) == "table" and type(a.issue) == "string" and type(a.pane) == "number" and type(a.state) == "string" then
+					local old = state.agents[a.issue]
+					agents[a.issue] = {
+						pane = a.pane,
+						state = a.state,
+						-- The time in this state runs on while the same chat stays in it.
+						since = if old and old.pane == a.pane and old.state == a.state then old.since else now,
+						cwd = if type(a.cwd) == "string" then a.cwd else nil,
+					}
+				end
+			end
+			state.agents = agents
+			state.agentsSeen = true
+			return
+		elseif ev.act == "auto-changed" then
+			state.cx:render()
+			autoTick(state)
+			return
+		elseif ev.act == "focused" then
+			state.focusing = false
+			return
+		end
 		-- From the window half: the open chats "Send to chat" asked for.
 		if ev.act == "chats" then
 			if state.listing and type(ev.chats) == "table" then

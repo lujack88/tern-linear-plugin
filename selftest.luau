@@ -275,23 +275,40 @@ local cases: { { name: string, fn: () -> () } } = {
 		name = "workflow brief",
 		fn = function()
 			local e = { issue = issue(4, "todo"), title = "Fix it", stateName = "Todo", description = "Steps here" }
+			local e2 = { issue = issue(11, "todo"), title = "Other", stateName = "Todo", description = "More" }
 			local prompts = {
-				Model.startPrompt(e.issue, e.title, e.stateName, e.description),
-				Model.startPromptMany({ e, e }),
-				Model.contextPrompt({ e }),
-				Model.contextPrompt({ e, e }),
+				{ Model.startPrompt(e.issue, e.title, e.stateName, e.description), false },
+				{ Model.contextPrompt({ e }), false },
+				{ Model.contextPrompt({ e, e2 }), true },
 			}
-			local steps = { "skill://grill-with-docs", "skill://show-me", "Implement nothing until I approve", "In Progress", "subagents", "open a PR", "In Review", "reviewer subagents", "QA it yourself", "advisor", "needs human QA", "skill://visual-pr", "Merge by default", "Leave the issue(s) in review", "exact QA steps", "final message", "human QA", "wait for my OK before merging" }
-			for i, p in prompts do
-				local at = string.find(p, "Steps here", 1, true) or math.huge
-				for _, want in steps do
-					local s = string.find(p, want, 1, true)
-					check(s ~= nil and s > at, i .. ": " .. want .. " after the issue")
+			local heads = { "## Before you start", "## Hard stops", "## 1. Plan", "## 2. Build", "## 3. Ship", "## 4. Handover" }
+			local function find(p: string, s: string, from: number?): number?
+				return (string.find(p, s, from or 1, true))
+			end
+			for i, item in prompts do
+				local p, multi = item[1] :: string, item[2] :: boolean
+				local at = find(p, "Steps here") or 0
+				check(at > 0, i .. ": description")
+				for _, h in heads do
+					local s = find(p, h)
+					check(s ~= nil and s > at and find(p, h, s + 1) == nil, i .. ": " .. h .. " once, after the issue")
+					at = s or at
 				end
-				local qa, vp = string.find(p, "exact QA steps", 1, true), string.find(p, "skill://visual-pr", 1, true)
-				check(qa ~= nil and vp ~= nil and vp > qa, i .. ": visual-pr after the hand-over")
-				local _, n = string.gsub(p, "Workflow:", "")
-				check(n == 1, i .. ": brief once")
+				for _, want in { "skill://domain-modeling", "skill://show-me", "skill://visual-pr" } do
+					check(find(p, want) ~= nil, i .. ": " .. want)
+				end
+				check((find(p, "skill://visual-pr") or 0) > (find(p, "## 4. Handover") or math.huge), i .. ": visual-pr after the handover")
+				local tail = "Its output must be your final message."
+				check(string.sub(p, -#tail) == tail, i .. ": ends with the final message")
+				if multi then
+					for _, want in { "Write ONE plan covering all of them.", "Fixes ENG-4", "Fixes ENG-11" } do
+						check(find(p, want) ~= nil, i .. ": " .. want)
+					end
+				else
+					for _, want in { "title `ENG-4: Fix it`", "Fixes ENG-4" } do
+						check(find(p, want) ~= nil, i .. ": " .. want)
+					end
+				end
 			end
 		end,
 	},
@@ -314,19 +331,24 @@ local cases: { { name: string, fn: () -> () } } = {
 		end,
 	},
 	{
-		name = "startPromptMany",
+		name = "startPrompts",
 		fn = function()
 			local a = issue(4, "todo", { priority = 2, assignee = "Ada" })
-			local p = Model.startPromptMany({
-				{ issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" },
-				{ issue = issue(11, "todo"), title = "Other", stateName = nil, description = nil },
-			})
-			check(string.find(p, "^Start working on these 2 Linear issues together: ENG%-4, ENG%-11%.") ~= nil, "lead")
-			local i4, i11 = string.find(p, "## ENG-4: Fix it", 1, true), string.find(p, "## ENG-11: Other", 1, true)
-			check(i4 ~= nil and i11 ~= nil and i4 < i11, "sections in order")
-			for _, want in { "- Priority: High", "- Assignee: Ada", "### Description\n\nSteps here", "could not be loaded", "ONE plan" } do
-				check(string.find(p, want, 1, true) ~= nil, want)
+			local e = { issue = a, title = "Fix it", stateName = "Todo", description = "Steps here" }
+			local e2 = { issue = issue(11, "todo"), title = "Other", stateName = nil, description = nil }
+			local ps = Model.startPrompts({ e, e2 })
+			check(#ps == 2, "one prompt per issue")
+			check(ps[1].prompt == Model.startPrompt(e.issue, e.title, e.stateName, e.description), "first is ENG-4's Start")
+			check(ps[2].prompt == Model.startPrompt(e2.issue, e2.title, e2.stateName, e2.description), "second is ENG-11's Start")
+			check(string.find(ps[1].prompt, "ENG-11", 1, true) == nil and string.find(ps[2].prompt, "ENG-4", 1, true) == nil, "no other issue")
+			for _, p in ps do
+				check(string.find(p.prompt, "ONE plan", 1, true) == nil, "no shared plan")
 			end
+			check(ps[1].issueId == "i4" and ps[2].issueId == "i11", "issue ids")
+			check(ps[1].model == nil and ps[1].thinking == nil and ps[1].cwd == nil, "no picks")
+			local q = Model.startPrompts({ e }, { model = "a/b", thinking = "high", cwd = "C:/w" })
+			check(q[1].model == "a/b" and q[1].thinking == "high" and q[1].cwd == "C:/w", "picks copied")
+			check(#Model.startPrompts({}) == 0, "none")
 		end,
 	},
 	{
@@ -463,6 +485,303 @@ local cases: { { name: string, fn: () -> () } } = {
 			check(tl[4].kind == "relation" and tl[4].who == "GitHub" and tl[4].ident == "FIX-39" and tl[4].title == "Sticky footer", "relation with the related title")
 			check(tl[5].ident == "FIX-7" and tl[5].title == nil, "relation to an issue not loaded")
 			check(#Model.timeline({}) == 0, "nothing loaded")
+		end,
+	},
+	{
+		name = "taskGroups",
+		fn = function()
+			local cols = {
+				{ state = state("todo", "unstarted", 0), issues = { issue(1, "todo"), issue(2, "todo") } },
+				{ state = state("prog", "started", 1), issues = { issue(3, "prog") } },
+				{ state = state("review", "started", 2), issues = { issue(4, "review") } },
+				{ state = state("back", "backlog", 9), issues = { issue(5, "back") } },
+				{ state = state("done", "completed", 0), issues = { issue(6, "done") } },
+				{ state = state("x1", "canceled", 3), issues = { issue(7, "x1") } },
+			}
+			local g = Model.taskGroups(cols)
+			check(ids(g.open, "id") == "i3,i4,i1,i2", "started before unstarted: " .. ids(g.open, "id"))
+			check(ids(g.backlog, "id") == "i5", "backlog")
+			check(ids(g.done, "id") == "i6", "done, canceled ignored")
+			local e = Model.taskGroups({})
+			check(#e.open == 0 and #e.backlog == 0 and #e.done == 0, "empty")
+		end,
+	},
+	{
+		name = "agentKind",
+		fn = function()
+			check(Model.agentKind("working") == "running", "working")
+			check(Model.agentKind("waiting_input") == "needs", "waiting")
+			check(Model.agentKind("idle") == "review", "idle")
+			check(Model.agentKind("exited") == "stopped", "exited")
+			check(Model.agentKind("weird") == nil and Model.agentKind(nil) == nil and Model.agentKind(3) == nil, "unknown")
+		end,
+	},
+	{
+		name = "agentLine",
+		fn = function()
+			check(Model.agentLine("running", nil) == "Working", "nil seconds")
+			check(Model.agentLine("running", 59) == "Working", "59 s")
+			check(Model.agentLine("running", 61) == "Working · 1m", "61 s")
+			check(Model.agentLine("running", 3900) == "Working · 1h 5m", "1h 5m")
+			check(Model.agentLine("needs", 5) == "Needs you", "needs")
+			check(Model.agentLine("review", nil) == "Ready for you", "review")
+			check(Model.agentLine("stopped", nil) == "Stopped", "stopped")
+			check(Model.agentLine(nil, 10) == nil and Model.agentLine("x", nil) == nil, "none")
+		end,
+	},
+	{
+		name = "short",
+		fn = function()
+			local iso = "2026-01-01T00:00:00.000Z"
+			local t = Model.epoch(iso) :: number
+			local d = 86400
+			check(Model.short("nope", t) == "" and Model.short(nil, t) == "", "not a time")
+			check(Model.short(iso, t - 100) == "now", "future")
+			check(Model.short(iso, t + 59) == "now", "59 s")
+			check(Model.short(iso, t + 60) == "1m" and Model.short(iso, t + 3599) == "59m", "minutes")
+			check(Model.short(iso, t + 3600) == "1h" and Model.short(iso, t + d - 1) == "23h", "hours")
+			check(Model.short(iso, t + d) == "1d" and Model.short(iso, t + 7 * d - 1) == "6d", "days")
+			check(Model.short(iso, t + 7 * d) == "1w" and Model.short(iso, t + 30 * d - 1) == "4w", "weeks")
+			check(Model.short(iso, t + 30 * d) == "1mo" and Model.short(iso, t + 365 * d - 1) == "12mo", "months")
+			check(Model.short(iso, t + 365 * d) == "1y" and Model.short(iso, t + 800 * d) == "2y", "years")
+		end,
+	},
+	{
+		name = "nextThinking",
+		fn = function()
+			local seq = { "off", "auto", "minimal", "low", "medium", "high", "xhigh", "max" }
+			local cur: string? = nil
+			for _, want in seq do
+				cur = Model.nextThinking(cur, nil)
+				check(cur == want, "default cycle at " .. want)
+			end
+			check(Model.nextThinking(cur, nil) == nil, "back to default")
+			check(Model.nextThinking("auto", {}) == "minimal", "empty levels = default")
+			local own = { "low", "high" }
+			check(Model.nextThinking("auto", own) == "low" and Model.nextThinking("low", own) == "high", "own levels")
+			check(Model.nextThinking("high", own) == nil, "own levels end")
+			check(Model.nextThinking("medium", own) == "off" and Model.nextThinking("zzz", nil) == "off", "unknown restarts")
+		end,
+	},
+	{
+		name = "safeArg",
+		fn = function()
+			check(Model.safeArg("anthropic/claude-fable-5"), "selector")
+			check(Model.safeArg("a:b.c_d"), "punctuation")
+			check(not Model.safeArg(""), "empty")
+			check(not Model.safeArg("a b"), "space")
+			check(not Model.safeArg('a"b') and not Model.safeArg("a'b"), "quotes")
+			check(not Model.safeArg("a;rm"), "semicolon")
+			check(Model.safeArg(string.rep("a", 200)) and not Model.safeArg(string.rep("a", 201)), "length")
+			check(not Model.safeArg(nil) and not Model.safeArg(5), "non-string")
+		end,
+	},
+	{
+		name = "startCommand",
+		fn = function()
+			local base = 'omp --plan --config "C:/p/plan-mode.yml"'
+			check(Model.startCommand("C:/p", nil, nil) == base, "no picks")
+			check(Model.startCommand("C:/p", "a/m-1", nil) == base .. " --model a/m-1", "model")
+			check(Model.startCommand("C:/p", nil, "high") == base .. " --thinking high", "thinking")
+			check(Model.startCommand("C:/p", "a m;x", "high") == base .. " --thinking high", "unsafe model dropped")
+			check(Model.startCommand("C:/p", "a/m", "huge") == base .. " --model a/m", "unknown thinking dropped")
+		end,
+	},
+	{
+		name = "autoSettings",
+		fn = function()
+			local function is(s: any, on: boolean, max: number): boolean
+				return s.on == on and s.max == max
+			end
+			check(is(Model.autoSettings(nil), false, 2) and is(Model.autoSettings("junk"), false, 2), "defaults")
+			check(is(Model.autoSettings({ on = true, max = 3 }), true, 3), "valid")
+			check(is(Model.autoSettings({ on = true, max = 7 }), true, 3) and is(Model.autoSettings({ max = 0 }), false, 1), "clamped")
+			check(is(Model.autoSettings({ max = 2.9 }), false, 2) and is(Model.autoSettings({ max = -5 }), false, 1), "floored")
+			check(is(Model.autoSettings({ on = "yes", max = "3" }), false, 2) and is(Model.autoSettings({ max = 0 / 0 }), false, 2), "malformed fields")
+		end,
+	},
+	{
+		name = "hasLabel and busySlots",
+		fn = function()
+			local i = { labels = { nodes = { { name = "Bug" }, { name = "Agent" } } } }
+			check(Model.hasLabel(i, "agent") and Model.hasLabel(i, "AGENT"), "case-insensitive")
+			check(not Model.hasLabel(i, "feature"), "other label")
+			check(not Model.hasLabel({}, "agent") and not Model.hasLabel({ labels = {} }, "agent"), "no labels")
+			check(Model.busySlots({ a = "working", b = "exited", c = "idle", d = "waiting_input" }) == 3, "exited ignored")
+			check(Model.busySlots({}) == 0, "none")
+		end,
+	},
+	{
+		name = "autoCandidates",
+		fn = function()
+			local function opted(n: number, stateId: string, opts: IssueOpts?): any
+				local x = issue(n, stateId, opts)
+				x.labels = { nodes = { { name = "Agent" } } }
+				return x
+			end
+			local cols = Model.columns({
+				opted(1, "todo", { assignee = "me", priority = 3 }),
+				opted(2, "prog", { assignee = "me" }),
+				opted(3, "todo", { assignee = "you" }),
+				issue(4, "todo", { assignee = "me" }),
+				opted(5, "todo", { assignee = "me" }),
+				opted(6, "todo", { assignee = "me" }),
+				opted(7, "todo", { assignee = "me", priority = 1 }),
+			}, STATES, {})
+			local got = ids(Model.autoCandidates(cols, "me", { i5 = 1700000000 }, { i6 = "working", i7 = "exited" }), "identifier")
+			check(got == "ENG-7,ENG-1", "candidates " .. got)
+			check(#Model.autoCandidates(cols, nil, {}, {}) == 0, "nil viewerId")
+			check(ids(Model.autoCandidates(cols, "me", {}, { i6 = "idle" }), "identifier") == "ENG-7,ENG-1,ENG-5", "idle chat holds its Issue")
+		end,
+	},
+	{
+		name = "budget",
+		fn = function()
+			local function lim(id: string, amount: string): string
+				return '{"id":"' .. id .. '","window":{"id":"x"},"amount":' .. amount .. "}"
+			end
+			local function usage(...: string): string
+				return '{"reports":[{"provider":"anthropic","limits":[' .. table.concat({ ... }, ",") .. "]}]}"
+			end
+			local function frac(f: number): string
+				return '{"used":1,"limit":100,"usedFraction":' .. f .. ',"unit":"percent"}'
+			end
+			local b = Model.budget(usage(lim("anthropic:5h", frac(0.86)), lim("anthropic:7d", frac(0.14))), 0.8)
+			check(b.blocked and b.reason == "Claude 5-hour window at 86%" and b.used == 0.86, "5h over: " .. tostring(b.reason))
+			b = Model.budget(usage(lim("anthropic:5h", frac(0.5)), lim("anthropic:7d", frac(0.81)), lim("anthropic:7d:fable", frac(0.99))), 0.8)
+			check(b.blocked and b.reason == "Claude 7-day window at 81%" and b.used == 0.81, "7d over is the highest: " .. tostring(b.reason))
+			b = Model.budget(usage(lim("anthropic:5h", frac(0.5)), lim("anthropic:7d", frac(0.14)), lim("anthropic:7d:fable", frac(0.95))), 0.8)
+			check(not b.blocked and b.reason == nil and b.used == 0.5, "fable ignored")
+			b = Model.budget(usage(lim("anthropic:5h", '{"used":90,"limit":100}')), 0.8)
+			check(b.blocked and b.reason == "Claude 5-hour window at 90%", "used/limit: " .. tostring(b.reason))
+			b = Model.budget(usage(lim("anthropic:5h", frac(0.8))), 0.8)
+			check(b.blocked and b.reason == "Claude 5-hour window at 80%", "exactly the limit blocks")
+			for _, bad in { "nope", "", usage(), usage(lim("anthropic:7d:fable", frac(0.1))) } do
+				b = Model.budget(bad, 0.8)
+				check(b.blocked and b.reason == "usage unknown" and b.used == nil, "usage unknown: " .. bad)
+			end
+			check(Model.budget(nil, 0.8).reason == "usage unknown", "nil stdout")
+		end,
+	},
+	{
+		name = "prStatus",
+		fn = function()
+			local sample = '{"number":103,"url":"https://github.com/lujack88/fixit-app/pull/103","state":"OPEN","headRefOid":"01b3d57","statusCheckRollup":['
+				.. '{"__typename":"CheckRun","name":"platform-guard","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/lujack88/fixit-app/actions/runs/42346208184/job/128324391752"},'
+				.. '{"__typename":"CheckRun","name":"ci","status":"IN_PROGRESS","conclusion":""},'
+				.. '{"__typename":"CheckRun","name":"Supabase Preview","status":"COMPLETED","conclusion":"SKIPPED"},'
+				.. '{"__typename":"StatusContext","context":"Vercel","state":"SUCCESS","targetUrl":"x"}]}'
+			local pr = Model.prStatus(sample) :: Model.Pr
+			check(pr ~= nil and pr.number == 103 and pr.state == "OPEN" and pr.sha == "01b3d57", "fields")
+			check(pr.ci == "pending" and table.concat(pr.failed, ",") == "platform-guard" and pr.runId == "42346208184", "sample: " .. tostring(pr.ci))
+			local function rollup(entries: string): Model.Pr
+				return Model.prStatus('{"number":1,"url":"u","state":"OPEN","headRefOid":"s","statusCheckRollup":[' .. entries .. "]}") :: Model.Pr
+			end
+			local ok = '{"__typename":"CheckRun","name":"a","status":"COMPLETED","conclusion":"SUCCESS"}'
+			check(rollup(ok .. ',{"__typename":"StatusContext","context":"V","state":"SUCCESS"}').ci == "green", "all success")
+			local red = rollup(ok .. ',{"__typename":"CheckRun","name":"b","status":"COMPLETED","conclusion":"TIMED_OUT"},{"__typename":"CheckRun","name":"b","status":"COMPLETED","conclusion":"FAILURE"}')
+			check(red.ci == "red" and table.concat(red.failed, ",") == "b" and red.runId == nil, "failure only, no duplicates, no runId")
+			local err = rollup('{"__typename":"StatusContext","context":"Vercel","state":"ERROR"}')
+			check(err.ci == "red" and err.failed[1] == "Vercel", "StatusContext ERROR")
+			check(rollup('{"__typename":"StatusContext","context":"V","state":"EXPECTED"}').ci == "pending", "StatusContext EXPECTED")
+			check(rollup("").ci == "none" and #rollup("").failed == 0, "empty rollup")
+			check((Model.prStatus('{"number":2,"state":"MERGED"}') :: Model.Pr).ci == "none", "missing rollup")
+			check(Model.prStatus("no pull requests found") == nil and Model.prStatus(nil) == nil and Model.prStatus('{"url":"x"}') == nil, "not a PR")
+		end,
+	},
+	{
+		name = "ciStep",
+		fn = function()
+			local function pr(st: string, ci: string, sha: string): Model.Pr
+				return { number = 103, url = "u", state = st, sha = sha, ci = ci, failed = { "platform-guard" }, runId = nil }
+			end
+			local e: Model.CiEntry = { rounds = 1, sha = "a" }
+			local function is(s: Model.CiStep, action: string, entry: Model.CiEntry?): boolean
+				return s.action == action and s.entry == entry
+			end
+			check(is(Model.ciStep(e, nil, "idle", 2), "none", e), "no PR")
+			check(is(Model.ciStep(e, pr("MERGED", "red", "b"), "idle", 2), "clear", nil) and is(Model.ciStep(nil, pr("CLOSED", "green", "b"), "idle", 2), "none", nil), "merged or closed")
+			check(is(Model.ciStep(e, pr("OPEN", "red", "b"), "working", 2), "none", e) and is(Model.ciStep(e, pr("OPEN", "red", "b"), "waiting_input", 2), "none", e), "chat busy")
+			check(is(Model.ciStep(e, pr("OPEN", "pending", "b"), "idle", 2), "none", e) and is(Model.ciStep(e, pr("OPEN", "none", "b"), "exited", 2), "none", e), "pending or none")
+			check(is(Model.ciStep(e, pr("OPEN", "green", "b"), "idle", 2), "clear", nil) and is(Model.ciStep(nil, pr("OPEN", "green", "b"), "idle", 2), "none", nil), "green")
+			check(is(Model.ciStep(e, pr("OPEN", "red", "a"), "idle", 2), "none", e) and is(Model.ciStep(e, pr("OPEN", "red", "a"), nil, 2), "none", e), "same sha")
+			local s = Model.ciStep(nil, pr("OPEN", "red", "b"), nil, 2)
+			local ent = s.entry :: Model.CiEntry
+			check(s.action == "block" and s.reason == "chat closed with red CI" and ent.rounds == 0 and ent.sha == "b" and ent.blocked == s.reason, "no chat")
+			s = Model.ciStep(e, pr("OPEN", "red", "b"), "exited", 2)
+			ent = s.entry :: Model.CiEntry
+			check(s.action == "block" and s.reason == "chat closed with red CI" and ent.rounds == 1, "chat exited")
+			s = Model.ciStep(nil, pr("OPEN", "red", "b"), "idle", 2)
+			ent = s.entry :: Model.CiEntry
+			check(s.action == "send" and ent.rounds == 1 and ent.sha == "b" and ent.blocked == nil, "first round")
+			s = Model.ciStep({ rounds = 1, sha = "a", blocked = "x" }, pr("OPEN", "red", "b"), "idle", 2)
+			ent = s.entry :: Model.CiEntry
+			check(s.action == "send" and ent.rounds == 2 and ent.sha == "b" and ent.blocked == nil, "second round clears blocked")
+			s = Model.ciStep({ rounds = 2, sha = "b" }, pr("OPEN", "red", "c"), "idle", 2)
+			ent = s.entry :: Model.CiEntry
+			check(s.action == "block" and s.reason == "CI red after 2 rounds" and ent.rounds == 2 and ent.sha == "c" and ent.blocked == s.reason, "round limit")
+		end,
+	},
+	{
+		name = "ciPrompt and blockedLine",
+		fn = function()
+			local pr: Model.Pr = { number = 103, url = "u", state = "OPEN", sha = "s", ci = "red", failed = { "platform-guard", "ci" }, runId = "42346208184" }
+			local want = "PR #103 for FIX-12 has failing checks: platform-guard, ci (round 1 of 2).\n\n"
+				.. "Run `gh run view 42346208184 --log-failed` to see why, fix it in the same worktree, push, and wait for the checks. The hard stops still apply."
+			check(Model.ciPrompt("FIX-12", pr, 1, 2) == want, "with runId:\n" .. Model.ciPrompt("FIX-12", pr, 1, 2))
+			pr.runId = nil
+			local p = Model.ciPrompt("FIX-12", pr, 2, 2)
+			check(string.find(p, "(round 2 of 2).\n\nRun `gh pr checks 103` to see why, fix it", 1, true) ~= nil, "without runId:\n" .. p)
+			check(Model.blockedLine("CI red after 2 rounds") == "Blocked · CI red after 2 rounds", "blockedLine")
+		end,
+	},
+	{
+		name = "worktrees",
+		fn = function()
+			local text = table.concat({
+				"worktree C:/Users/admin/Documents/fixit-app", "HEAD c5056a97", "branch refs/heads/main", "",
+				"worktree C:/Users/admin/Documents/fixit-app.lujack882/fix-106-let-customers", "HEAD 2e551d31", "branch refs/heads/lujack882/fix-106-let-customers", "",
+				"worktree C:/x/y", "HEAD 8c853f26", "detached", "locked reason text", "prunable gitdir file points to non-existent location", "", "",
+			}, "\r\n")
+			local w = Model.worktrees(text)
+			check(#w == 3, "count " .. #w)
+			check(w[1].main and w[1].path == "C:/Users/admin/Documents/fixit-app" and w[1].branch == "main" and w[1].head == "c5056a97", "main block")
+			check(not w[2].main and w[2].branch == "lujack882/fix-106-let-customers" and w[2].path == "C:/Users/admin/Documents/fixit-app.lujack882/fix-106-let-customers", "branch stripped")
+			check(not w[2].detached and not w[2].locked and not w[2].prunable and not w[2].bare, "plain flags")
+			check(w[3].path == "C:/x/y" and w[3].detached and w[3].branch == nil and w[3].locked and w[3].prunable and not w[3].main, "detached, locked, prunable")
+			check(#Model.worktrees("") == 0, "empty")
+		end,
+	},
+	{
+		name = "cleanupVerdict",
+		fn = function()
+			local wt: Model.Worktree = { path = "p", head = "h", branch = nil, main = true, bare = true, detached = true, locked = true, prunable = true }
+			local f: Model.WorktreeFacts = { dirty = nil, unpushed = nil, pr = nil, busy = true }
+			-- Fix one problem at a time: the next reason in order must show.
+			local steps: { { fix: () -> (), ok: boolean, reason: string } } = {
+				{ fix = function() end, ok = false, reason = "main checkout" },
+				{ fix = function() wt.main = false end, ok = false, reason = "bare repository" },
+				{ fix = function() wt.bare = false end, ok = false, reason = "no branch" },
+				{ fix = function() wt.detached = false end, ok = false, reason = "no branch" },
+				{ fix = function() wt.branch = "b" end, ok = false, reason = "locked" },
+				{ fix = function() wt.locked = false end, ok = false, reason = "folder is gone" },
+				{ fix = function() wt.prunable = false end, ok = false, reason = "a chat is still working in it" },
+				{ fix = function() f.busy = false end, ok = false, reason = "PR state unknown" },
+				{ fix = function() f.pr = "OPEN" end, ok = false, reason = "PR is open" },
+				{ fix = function() f.pr = "NONE" end, ok = false, reason = "no PR" },
+				{ fix = function() f.pr = "MERGED" end, ok = false, reason = "could not read changes" },
+				{ fix = function() f.dirty = true end, ok = false, reason = "uncommitted changes" },
+				{ fix = function() f.dirty = false end, ok = false, reason = "could not check commits" },
+				{ fix = function() f.unpushed = 1 end, ok = false, reason = "1 commit not on GitHub" },
+				{ fix = function() f.unpushed = 3 end, ok = false, reason = "3 commits not on GitHub" },
+				{ fix = function() f.unpushed = 0 end, ok = true, reason = "PR merged" },
+				{ fix = function() f.pr = "CLOSED" end, ok = true, reason = "PR closed" },
+			}
+			for i, s in steps do
+				s.fix()
+				local ok, reason = Model.cleanupVerdict(wt, f)
+				check(ok == s.ok and reason == s.reason, i .. ": want " .. s.reason .. ", got " .. reason)
+			end
 		end,
 	},
 }

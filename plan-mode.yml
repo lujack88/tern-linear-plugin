@@ -1,3 +1,11 @@
-# omp --config overlay for chats started from the board: open them in plan mode.
-plan:
-  defaultOnStartup: true
+# omp --config overlay for chats started from the board; applies to that chat only.
+# Plan mode comes from the Plannotator omp plugin (`omp --plan`, see Model.startCommand),
+# so omp's own plan mode stays off and the plan is reviewed in Plannotator.
+task:
+  # Generic prewalk: each `task` subagent plans on its @task model, then hands off to @smol
+  # at its first edit/write. Read-only agents never hand off.
+  prewalk: true
+  # Risk-sized review (see the brief): generic reviewers are cheap, the security reviewer is not.
+  agentModelOverrides:
+    reviewer: anthropic/claude-sonnet-5-5
+    security-reviewer: anthropic/claude-opus-5-5
