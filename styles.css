@@ -457,22 +457,22 @@
 		height: 12px;
 		flex: 0 0 12px;
 		border-radius: 50%;
-		border: 1.5px solid var(--t3);
+		border: 1.5px solid #c4c4c8;
 	}
 
 	& .lt-state[data-type='backlog'] {
-		border: 1.5px dashed var(--t4);
+		border: 1.5px dashed #95959f;
 	}
 
 	& .lt-state[data-type='started'] {
-		border-color: var(--lt-warn);
-		background: linear-gradient(90deg, var(--lt-warn) 50%, transparent 50%);
+		border-color: #f2c94c;
+		background: linear-gradient(90deg, #f2c94c 50%, transparent 50%);
 	}
 
 	& .lt-state[data-type='completed'] {
-		border-color: var(--lt-ok);
-		background: var(--lt-ok);
-		color: var(--lt-on-tone);
+		border-color: #5e6ad2;
+		background: #5e6ad2;
+		color: white;
 		font-size: 8px;
 		line-height: 9px;
 		text-align: center;
@@ -760,13 +760,13 @@
 	}
 
 	& .lt-progress[data-p='part'] .lt-ring {
-		border-color: var(--lt-ok);
-		background: linear-gradient(90deg, var(--lt-ok) 50%, transparent 50%);
+		border-color: #5e6ad2;
+		background: linear-gradient(90deg, #5e6ad2 50%, transparent 50%);
 	}
 
 	& .lt-progress[data-p='done'] .lt-ring {
-		border-color: var(--lt-ok);
-		background: var(--lt-ok);
+		border-color: #5e6ad2;
+		background: #5e6ad2;
 	}
 
 	& .lt-parent {
@@ -1787,7 +1787,7 @@
 		inset: 2px;
 		box-sizing: border-box;
 		border-radius: 50%;
-		border: 1.5px solid var(--t3);
+		border: 1.5px solid #c4c4c8;
 		font-size: 11px;
 		font-weight: 700;
 		line-height: 13px;
@@ -1799,22 +1799,23 @@
 	}
 
 	& .lt-t-glyph[data-kind='unstarted']::before {
-		border-color: var(--t3);
+		border-color: #c4c4c8;
 	}
 
 	& .lt-t-glyph[data-kind='backlog']::before {
-		border: 1.5px dashed var(--t4);
+		border: 1.5px dashed #95959f;
 	}
 
 	& .lt-t-glyph[data-kind='started']::before {
-		border-color: var(--lt-warn);
-		background: linear-gradient(90deg, var(--lt-warn) 50%, transparent 50%);
+		border-color: #f2c94c;
+		background: linear-gradient(90deg, #f2c94c 50%, transparent 50%);
 	}
 
 	& .lt-t-glyph[data-kind='completed']::before {
 		content: "✓";
-		border-color: var(--lt-ok);
-		background: var(--lt-ok);
+		border-color: #5e6ad2;
+		background: #5e6ad2;
+		color: white;
 	}
 
 	& .lt-t-glyph[data-kind='running']::before {
