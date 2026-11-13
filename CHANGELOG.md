@@ -2,6 +2,19 @@
 
 Notable changes to the Linear Taskboard (`linear-todo`) Tern plugin, newest first.
 
+## 0.10.0 — 2026-11-13 (#9)
+
+### Changed
+
+- The board takes its colours from your Tern theme instead of a fixed Linear
+  palette, so it follows the theme, light or dark: column wells, cards and
+  hairlines; priority (Urgent in the error colour, High in the warning colour,
+  Medium in the info colour); linked-chat badges; and the accent tint on the
+  active view tab. **+ New issue** is drawn as the theme's primary button.
+  Status glyphs, labels and workspace avatars keep Linear's colours. The colour
+  scheme follows
+  [peterrauscher/tern-linear](https://github.com/peterrauscher/tern-linear).
+
 ## 0.9.1 — 2026-11-13 (#8)
 
 ### Fixed
