@@ -2590,7 +2590,6 @@ local function itemProps(state: State, issue: any, class: string, dropHere: bool
 			["data-picked"] = flag(state.picked[id] == true),
 		},
 		mark = if state.lift == id then "pick" else nil,
-		title = issue.url,
 		actions = { click = "sel=" .. id },
 	}
 end

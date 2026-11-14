@@ -11,6 +11,11 @@ Notable changes to the Linear Taskboard (`linear-todo`) Tern plugin, newest firs
   "Connecting…" until the workspace was added again or **Linear: open board**
   was run.
 
+### Changed
+
+- Hovering a card or row no longer pops up the issue's Linear URL. **Copy
+  link** and **Open in Linear** are still in the issue's ⋮ menu.
+
 ## 0.9.0 — 2026-11-08 (#6)
 
 ### Added
