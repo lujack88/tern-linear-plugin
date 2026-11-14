@@ -87,9 +87,13 @@ pane is gone is dropped from kv. The board shows the state on the Tasks View's
 rows and card only: a chat never changes an issue's State, so closing it just
 removes the status.
 
-The window injects again on `window_start`, 300 ms after load (a reload does not
-fire `window_start`), after adding or switching a workspace, and up to 3 s after
-opening a board, to cover the block's init race. The block ignores a duplicate key
+The window hands the keys over on `window_start`, 300 ms after load (a reload does
+not fire `window_start`) and after adding or switching a workspace. An event sent
+while a block is still starting is dropped, so a board that has a workspace but no
+key asks for it: its title reads `Linear · connecting…` (`Model.KEY_TITLE`), and the
+window half, which checks the board titles every second, hands the keys over. A
+workspace whose key the keychain lacks is not asked for again until it is added or
+switched to. The block ignores a duplicate key
 for the same team. A new key for the same team only restarts polling; writes
 already in flight finish normally. A different team clears the board.
 

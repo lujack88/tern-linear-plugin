@@ -324,6 +324,10 @@ M.SEND_TITLE = "Linear · sending to a chat…"
 -- The board asks the window half to focus the chat pane in kv `linear-todo.focus`.
 M.FOCUS_TITLE = "Linear · focusing a chat…"
 
+-- The board has a workspace but no API key (its block just started): the window half, which
+-- checks board titles every second, hands the keys over.
+M.KEY_TITLE = "Linear · connecting…"
+
 -- Create modal ----------------------------------------------------------------
 
 M.PRIORITIES = { { value = 0, label = "No priority" }, { value = 1, label = "Urgent" }, { value = 2, label = "High" }, { value = 3, label = "Medium" }, { value = 4, label = "Low" } }

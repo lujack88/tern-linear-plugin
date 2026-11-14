@@ -2,6 +2,15 @@
 
 Notable changes to the Linear Taskboard (`linear-todo`) Tern plugin, newest first.
 
+## 0.9.2 — 2026-11-14 (#10)
+
+### Fixed
+
+- A board gets its API key by itself after a Tern restart, after a plugin
+  reload and when it is opened as a new block. It used to stay on
+  "Connecting…" until the workspace was added again or **Linear: open board**
+  was run.
+
 ## 0.9.0 — 2026-11-08 (#6)
 
 ### Added
