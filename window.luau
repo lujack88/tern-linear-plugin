@@ -106,7 +106,8 @@ end
 
 local function send(cx: WindowCx, panes: { number }, ev: { [string]: any })
 	for _, pane in panes do
-		cx.session:event(pane, ev)
+		-- A board that takes no event (still starting, or ended) must not keep it from the others.
+		pcall(cx.session.event, cx.session, pane, ev)
 	end
 end
 
@@ -174,23 +175,10 @@ local function pushAgents(cx: WindowCx, force: boolean?)
 	end
 end
 
-local sampling = false
-
--- Once per window VM: every second, the linked chats' states for the boards' Tasks View. Errors
--- are swallowed so the timer always re-arms.
-local function sample()
-	if sampling then
-		return
-	end
-	sampling = true
-	local function tick(cx: WindowCx?)
-		if cx then
-			pcall(pushAgents, cx)
-		end
-		tern.timer(1000, tick)
-	end
-	tern.timer(1000, tick)
-end
+-- A hand-over is reading the keychain: `answer` waits for it.
+local injecting = false
+-- The workspace (orgId) the keychain had no key for. The toast said so; `answer` does not ask again.
+local missing: string? = nil
 
 -- Hands every workspace's key to every board block, so its switcher needs no round trip. The
 -- keys never leave this VM except as the block's in-memory event payload.
@@ -213,11 +201,13 @@ local function inject(cx: WindowCx)
 		local w = list[i]
 		if not w then
 			-- Re-read: the board may have switched workspace while the keychain answered.
+			injecting = false
 			local cur = active()
 			local key = cur and keys[cur.orgId]
 			if not cur or not key then
 				-- A workspace newer than this read gets its own inject.
 				if cur and cur.orgId == s.orgId then
+					missing = cur.orgId
 					cx2:toast("error", "Missing Linear API key for " .. cur.orgName, "Add the workspace again")
 				end
 				return
@@ -227,6 +217,7 @@ local function inject(cx: WindowCx)
 		end
 		tern.secrets.get(secretName(w.orgId)):next(function(key, err, cx3)
 			if not cx3 then
+				injecting = false
 				return
 			end
 			if not err and type(key) == "string" and key ~= "" then
@@ -235,7 +226,42 @@ local function inject(cx: WindowCx)
 			step(i + 1, cx3)
 		end)
 	end
+	injecting = true
 	step(1, cx)
+end
+
+-- Hands the keys to a board that asks: one with a workspace but no key says so in its title
+-- (Model.KEY_TITLE), as an event sent while its block starts is dropped.
+local function answer(cx: WindowCx)
+	local s = active()
+	if injecting or (s ~= nil and s.orgId == missing) then
+		return
+	end
+	for _, p in cx.session:panes() do
+		if p.block == BLOCK and p.title == Model.KEY_TITLE then
+			inject(cx)
+			return
+		end
+	end
+end
+
+local sampling = false
+
+-- Once per window VM, every second: the keys for boards that ask, and the linked chats' states
+-- for the boards' Tasks View. Errors are swallowed so the timer always re-arms.
+local function sample()
+	if sampling then
+		return
+	end
+	sampling = true
+	local function tick(cx: WindowCx?)
+		if cx then
+			pcall(answer, cx)
+			pcall(pushAgents, cx)
+		end
+		tern.timer(1000, tick)
+	end
+	tern.timer(1000, tick)
 end
 
 -- Makes `w` the board's workspace and hands the boards its key.
@@ -244,6 +270,7 @@ local function activate(cx: WindowCx, w: Workspace)
 		cx:toast("error", "Could not switch the Linear workspace")
 		return
 	end
+	missing = nil
 	inject(cx)
 end
 
@@ -676,23 +703,10 @@ local function openBoard(cx: WindowCx)
 		cx:toast("info", "Linear board is already open")
 		return
 	end
-	local pane = cx:new_block(BLOCK, {}, "beside")
-	if not pane then
+	-- The new board asks for its key (Model.KEY_TITLE).
+	if not cx:new_block(BLOCK, {}, "beside") then
 		cx:toast("error", "Could not open the Linear board")
-		return
 	end
-	inject(cx)
-	-- The block may not accept events until it finished init.
-	tern.timer(1000, function(cx2)
-		if cx2 then
-			inject(cx2)
-		end
-	end)
-	tern.timer(3000, function(cx2)
-		if cx2 then
-			inject(cx2)
-		end
-	end)
 end
 
 local function syncNow(cx: WindowCx)
