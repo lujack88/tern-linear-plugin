@@ -16,6 +16,15 @@ Notable changes to the Linear Taskboard (`linear-todo`) Tern plugin, newest firs
 - Hovering a card or row no longer pops up the issue's Linear URL. **Copy
   link** and **Open in Linear** are still in the issue's ⋮ menu.
 
+## 0.9.1 — 2026-11-13 (#8)
+
+### Fixed
+
+- A board whose API key is no longer in the keychain says so and how to add it
+  again; it used to show "Connecting…" forever.
+- The workspace menu (with **Add workspace…**) opens on a board that has no
+  key or no workspace yet; it used to open only once issues had loaded.
+
 ## 0.9.0 — 2026-11-08 (#6)
 
 ### Added
