@@ -10,6 +10,10 @@ step with Linear while that pane exists.
 
 ## What's new
 
+**0.10.0** (2026-11-13, [#9](https://github.com/lujack88/tern-linear-plugin/pull/9)):
+the board takes its colours from your Tern theme, light or dark, instead of a
+fixed Linear palette.
+
 **0.9.0** (2026-11-08, [#6](https://github.com/lujack88/tern-linear-plugin/pull/6)):
 
 - [The Tasks View](#the-tasks-view): one list of open issues with the selected

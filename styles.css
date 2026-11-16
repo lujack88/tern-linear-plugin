@@ -1,13 +1,22 @@
-/* Linear board block: replicates Linear's board look on Tern's theme variables. */
+/* Linear board block: Linear's board layout, coloured from Tern's theme tokens so it follows the theme. */
 
 .sf-main[data-surface='plugin.linear-todo.board'],
 .sf-dock[data-surface='plugin.linear-todo.board'],
 .sf-layer[data-surface='plugin.linear-todo.board'] {
-	--lt-line: rgb(from var(--tv-fg) r g b / 8%);
-	--lt-line-hover: rgb(from var(--tv-fg) r g b / 16%);
+	--lt-line: var(--l2);
+	--lt-line-hover: var(--l3);
 	--lt-muted: var(--sf-c-muted, rgb(from var(--tv-fg) r g b / 55%));
 	--lt-tree: rgb(from var(--tv-fg) r g b / 22%);
-	--lt-red: #eb5757;
+	--lt-red: var(--bad);
+	--lt-warn: var(--warn);
+	--lt-ok: var(--ok);
+	--lt-info: var(--sf-c-info, var(--lt-accent));
+	--lt-card: var(--card);
+	/* White text reads on --accent-fill, not on --accent. */
+	--lt-fill: var(--accent-fill, var(--lt-accent));
+	/* Glyphs on an --ok/--warn/--bad fill: the page colour, dark on a dark theme's bright fills and light on a light
+	   theme's. Not --tv-bg: a wallpaper clears that to transparent. */
+	--lt-on-tone: var(--page);
 	/* --sf-accent is unset in some panes (it resolved to nothing in a chat-reader cover); --sf-c-accent is set there. */
 	--lt-accent: var(--sf-c-accent, var(--sf-accent));
 	font-family: "Inter", "Segoe UI", system-ui, sans-serif;
@@ -112,8 +121,8 @@
 	}
 
 	& .lt-tab[data-on='true'] {
-		background: rgb(from var(--tv-fg) r g b / 8%);
-		color: var(--tv-fg);
+		background: rgb(from var(--lt-accent) r g b / 12%);
+		color: var(--accent-ink, var(--tv-fg));
 	}
 
 	& .lt-mine {
@@ -144,16 +153,16 @@
 		height: 24px;
 		padding: 0 10px;
 		margin-right: 8px;
-		border: 1px solid var(--lt-line);
+		border: 1px solid transparent;
 		border-radius: 6px;
+		background: var(--grad, var(--lt-fill));
 		font-size: 12px;
-		color: var(--lt-muted);
+		font-weight: 500;
+		color: var(--grad-ink, white);
 	}
 
 	& .lt-new:hover {
-		background: rgb(from var(--tv-fg) r g b / 6%);
-		border-color: var(--lt-accent);
-		color: var(--tv-fg);
+		opacity: 88%;
 	}
 
 	& .lt-sync {
@@ -204,7 +213,7 @@
 		gap: 6px;
 		padding: 6px;
 		border-radius: 8px;
-		background: rgb(from var(--tv-fg) r g b / 2%);
+		background: var(--l1);
 	}
 
 	& .lt-col[data-drop='true'] {
@@ -262,7 +271,7 @@
 		flex-direction: column;
 		gap: 6px;
 		padding: 8px 10px;
-		background: var(--sf-card-bg);
+		background: var(--lt-card);
 		border: 1px solid var(--lt-line);
 		border-radius: 6px;
 		box-shadow: 0 1px 1px rgb(0 0 0 / 6%);
@@ -270,6 +279,7 @@
 	}
 
 	& .lt-card:hover {
+		background: var(--raise);
 		border-color: var(--lt-line-hover);
 	}
 
@@ -422,7 +432,7 @@
 
 	& .lt-list > [data-role='linear-todo.input'] {
 		padding: 8px 10px;
-		background: var(--sf-card-bg);
+		background: var(--lt-card);
 		border: 1px solid var(--lt-accent);
 		border-radius: 6px;
 	}
@@ -509,8 +519,14 @@
 		background: rgb(from var(--tv-fg) r g b / 35%);
 	}
 
-	& .lt-prio[data-p='p2'] .lt-bar,
-	& .lt-prio[data-p='p3'] .lt-bar:nth-child(-n+2),
+	& .lt-prio[data-p='p2'] .lt-bar {
+		background: var(--lt-warn);
+	}
+
+	& .lt-prio[data-p='p3'] .lt-bar:nth-child(-n+2) {
+		background: var(--lt-info);
+	}
+
 	& .lt-prio[data-p='p4'] .lt-bar:nth-child(1) {
 		background: rgb(from var(--tv-fg) r g b / 75%);
 	}
@@ -519,8 +535,8 @@
 		width: 12px;
 		padding: 0;
 		border-radius: 3px;
-		background: #f2994a;
-		color: white;
+		background: var(--lt-red);
+		color: var(--lt-on-tone);
 		font-size: 9px;
 		font-weight: 700;
 		line-height: 12px;
@@ -959,7 +975,7 @@
 		height: 28px;
 		padding: 0 12px;
 		border-radius: 6px;
-		background: var(--lt-accent);
+		background: var(--lt-fill);
 		color: white;
 		font-size: 12px;
 		font-weight: 600;
@@ -1410,7 +1426,7 @@
 		padding: 10px 12px;
 		border: 1px solid var(--lt-line);
 		border-radius: 10px;
-		background: var(--sf-card-bg);
+		background: var(--lt-card);
 	}
 
 	& .lt-dt-comment-head {
@@ -1437,7 +1453,7 @@
 		padding: 10px 12px 8px;
 		border: 1px solid var(--lt-line-hover);
 		border-radius: 10px;
-		background: var(--sf-card-bg);
+		background: var(--lt-card);
 		cursor: text;
 	}
 
@@ -1478,7 +1494,7 @@
 	}
 
 	& .lt-dt-send[data-ready='true'] {
-		background: var(--lt-accent);
+		background: var(--lt-fill);
 		color: white;
 	}
 }
@@ -1762,7 +1778,7 @@
 		height: 20px;
 		border-radius: 50%;
 		font-size: 0;
-		color: white;
+		color: var(--lt-on-tone);
 	}
 
 	& .lt-t-glyph::before {
@@ -1799,23 +1815,24 @@
 		content: "✓";
 		border-color: #5e6ad2;
 		background: #5e6ad2;
+		color: white;
 	}
 
 	& .lt-t-glyph[data-kind='running']::before {
-		border: 2px solid rgb(from #4ea7fc r g b / 25%);
-		border-top-color: #4ea7fc;
+		border: 2px solid rgb(from var(--lt-info) r g b / 25%);
+		border-top-color: var(--lt-info);
 		animation: lt-t-spin 0.9s linear infinite;
 	}
 
 	& .lt-t-glyph[data-kind='needs']::before {
 		content: "!";
-		border-color: #f2994a;
-		background: #f2994a;
+		border-color: var(--lt-warn);
+		background: var(--lt-warn);
 	}
 
 	& .lt-t-glyph[data-kind='review']::before {
-		border-color: #5e6ad2;
-		background: linear-gradient(90deg, #5e6ad2 50%, transparent 50%);
+		border-color: var(--lt-accent);
+		background: linear-gradient(90deg, var(--lt-accent) 50%, transparent 50%);
 	}
 
 	& .lt-t-glyph[data-kind='stopped']::before {
@@ -1863,9 +1880,9 @@
 		font-weight: 500;
 	}
 
-	& .lt-t-agent[data-kind='running'] { color: #4ea7fc; }
-	& .lt-t-agent[data-kind='needs'] { color: #f2994a; }
-	& .lt-t-agent[data-kind='review'] { color: #5e6ad2; }
+	& .lt-t-agent[data-kind='running'] { color: var(--lt-info); }
+	& .lt-t-agent[data-kind='needs'] { color: var(--lt-warn); }
+	& .lt-t-agent[data-kind='review'] { color: var(--lt-accent); }
 	& .lt-t-agent[data-kind='stopped'] { color: var(--lt-red); }
 
 	& .lt-t-pill {
@@ -1884,8 +1901,8 @@
 
 	/* Priority pills: each tone's hue in --lt-t-hue, its text in it and a faint tint behind. */
 	& .lt-t-meta > .lt-t-pill[data-pill='p1'] { --lt-t-hue: var(--lt-red); }
-	& .lt-t-meta > .lt-t-pill[data-pill='p2'] { --lt-t-hue: #f2994a; }
-	& .lt-t-meta > .lt-t-pill[data-pill='p3'] { --lt-t-hue: var(--lt-accent); }
+	& .lt-t-meta > .lt-t-pill[data-pill='p2'] { --lt-t-hue: var(--lt-warn); }
+	& .lt-t-meta > .lt-t-pill[data-pill='p3'] { --lt-t-hue: var(--lt-info); }
 	& .lt-t-meta > .lt-t-pill[data-pill='p4'] { --lt-t-hue: var(--lt-muted); }
 
 	& .lt-t-meta > .lt-t-pill[data-pill='p1'],
@@ -1903,8 +1920,8 @@
 	}
 
 	& .lt-t-pill[data-pill='pane'] {
-		background: rgb(from #4cb782 r g b / 14%);
-		color: #4cb782;
+		background: rgb(from var(--lt-ok) r g b / 14%);
+		color: var(--lt-ok);
 	}
 
 	& .lt-t-pill[data-pill='id'] {
@@ -2016,7 +2033,7 @@
 	& .lt-t-act[data-confirm='true']:hover {
 		padding: 0 10px;
 		background: var(--lt-red);
-		color: white;
+		color: var(--lt-on-tone);
 	}
 
 	& .lt-t-act[data-confirm='true']::before {
@@ -2074,7 +2091,7 @@
 		padding: 22px 24px;
 		border: 1px solid var(--lt-line);
 		border-radius: 22px;
-		background: var(--sf-card-bg);
+		background: var(--lt-card);
 		box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
 	}
 
@@ -2172,18 +2189,18 @@
 	}
 
 	& .lt-tc-badge[data-kind='running'] {
-		background: rgb(from #4ea7fc r g b / 15%);
-		color: #4ea7fc;
+		background: rgb(from var(--lt-info) r g b / 15%);
+		color: var(--lt-info);
 	}
 
 	& .lt-tc-badge[data-kind='needs'] {
-		background: rgb(from #f2994a r g b / 15%);
-		color: #f2994a;
+		background: rgb(from var(--lt-warn) r g b / 15%);
+		color: var(--lt-warn);
 	}
 
 	& .lt-tc-badge[data-kind='review'] {
-		background: rgb(from #5e6ad2 r g b / 15%);
-		color: #5e6ad2;
+		background: rgb(from var(--lt-accent) r g b / 15%);
+		color: var(--lt-accent);
 	}
 
 	& .lt-tc-badge[data-kind='stopped'] {
@@ -2306,13 +2323,13 @@
 	}
 
 	& .lt-tc-btn[data-primary='true'] {
-		background: var(--lt-accent);
-		border-color: var(--lt-accent);
+		background: var(--lt-fill);
+		border-color: var(--lt-fill);
 		color: white;
 	}
 
 	& .lt-tc-btn[data-primary='true']:hover {
-		background: rgb(from var(--lt-accent) r g b / 85%);
+		background: rgb(from var(--lt-fill) r g b / 85%);
 	}
 }
 
@@ -2459,7 +2476,7 @@
 		height: 28px;
 		padding: 0 12px;
 		border-radius: 6px;
-		background: var(--lt-accent);
+		background: var(--lt-fill);
 		color: #fff;
 		font-weight: 500;
 		white-space: nowrap;
@@ -2493,9 +2510,9 @@
 
 	/* On, but the budget gate holds new chats back. */
 	& .lt-auto[data-hold='true'] {
-		background: rgb(from #f2994a r g b / 15%);
-		border-color: rgb(from #f2994a r g b / 50%);
-		color: #f2994a;
+		background: rgb(from var(--lt-warn) r g b / 15%);
+		border-color: rgb(from var(--lt-warn) r g b / 50%);
+		color: var(--lt-warn);
 	}
 
 	& .lt-t-glyph[data-kind='blocked']::before {
