@@ -73,6 +73,8 @@ type State = {
 	switcher: boolean,
 	-- "Add workspace…" was picked: the title asks the window half to run its key prompt.
 	adding: boolean,
+	-- The window half found no API key in the keychain for this workspace.
+	noKey: boolean?,
 	-- "Start" was clicked: the title asks the window half to open an omp chat on kv `linear-todo.start`.
 	starting: boolean,
 	-- "Send to chat" was opened: the title asks the window half for `chats` (nil until it answers).
@@ -3127,9 +3129,10 @@ local function dock(state: State): Node?
 	return if #kids > 0 then region("dock", kids) else nil
 end
 
-local function empty(kids: { Node }, text: string): BlockView
+-- Keeps the workspace menu: a board without its key is where "Add workspace…" is needed.
+local function empty(state: State, kids: { Node }, text: string): BlockView
 	table.insert(kids, el("div", "empty", "empty", { class = "lt-empty", text = text }))
-	return { main = region("main", kids) }
+	return { main = region("main", kids), layer = if state.switcher then region("layer", { Create.scrim("ws-pop"), switcher(state) }) else nil }
 end
 
 local function view(state: State): BlockView
@@ -3172,11 +3175,11 @@ local function view(state: State): BlockView
 	end
 	local kids = header(state, #Model.list(cols))
 	if not state.teamId then
-		return empty(kids, "No Linear workspace yet. Run Linear: add workspace and paste a personal API key.")
+		return empty(state, kids, "No Linear workspace yet. Run Linear: add workspace and paste a personal API key.")
 	elseif not state.key then
-		return empty(kids, "Connecting…")
+		return empty(state, kids, if state.noKey then "The Linear API key for this workspace is missing from the keychain. Open the workspace menu above and choose Add workspace… to paste it again." else "Connecting…")
 	elseif #cols == 0 then
-		return empty(kids, if state.loading then "Loading…" else "No workflow states loaded yet.")
+		return empty(state, kids, if state.loading then "Loading…" else "No workflow states loaded yet.")
 	end
 	local liftState = stateIdOf(state, state.lift)
 	if state.view == "tasks" then
@@ -3412,7 +3415,12 @@ tern.block.define("board", {
 			return
 		end
 		-- From the window half: `value` is the Setup's team id, `key` the API key; never log this event.
+		if ev.act == "nokey" then
+			state.noKey = true
+			return
+		end
 		if ev.act == "key" then
+			state.noKey = false
 			if value == "" then
 				state.key, state.teamId, state.issues, state.states, state.keys = nil, nil, {}, {}, {}
 				resetBoard(state)

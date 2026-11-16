@@ -219,6 +219,7 @@ local function inject(cx: WindowCx)
 				-- A workspace newer than this read gets its own inject.
 				if cur and cur.orgId == s.orgId then
 					cx2:toast("error", "Missing Linear API key for " .. cur.orgName, "Add the workspace again")
+					send(cx2, boardPanes(cx2), { ev = "action", act = "nokey" })
 				end
 				return
 			end
