@@ -2592,7 +2592,6 @@ local function itemProps(state: State, issue: any, class: string, dropHere: bool
 			["data-picked"] = flag(state.picked[id] == true),
 		},
 		mark = if state.lift == id then "pick" else nil,
-		title = issue.url,
 		actions = { click = "sel=" .. id },
 	}
 end
@@ -3287,6 +3286,8 @@ tern.block.define("board", {
 			return Model.CHATS_TITLE
 		elseif state.focusing then
 			return Model.FOCUS_TITLE
+		elseif state.teamId and not state.key then
+			return Model.KEY_TITLE
 		end
 		local s = setupOf()
 		return "Linear · " .. (if s and s.teamKey then (s.orgName or "") .. " · " .. s.teamKey else "not set up")
